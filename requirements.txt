@@ -1,4 +1,4 @@
 Flask
 flask-cors
 resend
-gunicorn
+psycopg2-binary
