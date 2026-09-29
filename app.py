@@ -1,24 +1,55 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os, random, time
-from resend import Resend
+import os, random
+import psycopg2
+import resend
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 CORS(app)
 
-# Key Render se aayegi, yaha likhne ki zarurat nahi
-resend = Resend(api_key=os.environ.get('RESEND_API_KEY'))
+# Vercel me Environment Variable se aayega
+resend.api_key = os.environ.get('RESEND_API_KEY')
+DATABASE_URL = os.environ.get('DATABASE_URL') # Neon ka URL
 
-otp_storage = {}
+def get_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    return conn
+
+# Table banane ke liye ek baar chalega
+@app.route('/create-table')
+def create_table():
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS otps (
+            email VARCHAR(255) PRIMARY KEY,
+            otp_code VARCHAR(6),
+            expires_at TIMESTAMP
+        );
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+    return "Table Created - Ab ye 100 saal tak rahega"
 
 @app.route('/send-otp', methods=['POST'])
 def send_otp():
     data = request.get_json()
     email = data.get('email')
     otp = str(random.randint(100000, 999999))
-    otp_storage[email] = {'otp': otp, 'time': time.time()}
+    expiry = datetime.now() + timedelta(minutes=5)
 
-    resend.emails.send({
+    conn = get_db()
+    cur = conn.cursor()
+    # Neon me save - 100 saal tak safe
+    cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s, %s, %s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (email, otp, expiry, otp, expiry))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # Inbox me bhejne ke liye
+    resend.Emails.send({
         "from": "REKAVO <otp@rekavo.in>",
         "to": email,
         "subject": f"{otp} is your REKAVO OTP",
@@ -32,20 +63,25 @@ def verify_otp():
     email = data.get('email')
     user_otp = data.get('otp')
 
-    if email not in otp_storage:
-        return jsonify({"success": False, "message": "OTP not sent"})
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT otp_code, expires_at FROM otps WHERE email=%s", (email,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
 
-    if time.time() - otp_storage[email]['time'] > 300:
+    if not row:
+        return jsonify({"success": False, "message": "OTP not sent"})
+    
+    db_otp, expiry = row
+    if datetime.now() > expiry:
         return jsonify({"success": False, "message": "OTP expired"})
 
-    if otp_storage[email]['otp'] == user_otp:
+    if db_otp == user_otp:
         return jsonify({"success": True})
     else:
         return jsonify({"success": False, "message": "Wrong OTP"})
 
 @app.route('/')
 def home():
-    return "REKAVO Perfect OTP Backend Running"
-
-if __name__ == '__main__':
-    app.run()
+    return "REKAVO Perfect OTP Backend Running on Vercel + Neon"
