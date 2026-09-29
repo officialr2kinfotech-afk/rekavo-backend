@@ -18,14 +18,10 @@ def get_db():
 def create_table():
     conn = get_db()
     cur = conn.cursor()
-    # Base tables
     cur.execute("CREATE TABLE IF NOT EXISTS otps (email VARCHAR(255) PRIMARY KEY, otp_code VARCHAR(6), expires_at TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name VARCHAR(255), email VARCHAR(255) UNIQUE, password VARCHAR(255), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, user_id INTEGER, product_name VARCHAR(255), amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-
-    # Fix - purani table me phone column jod dega agar nahi hai toh
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20);")
-
     conn.commit()
     cur.close()
     conn.close()
@@ -35,13 +31,44 @@ def create_table():
 def send_otp():
     data = request.get_json()
     email = data.get('email')
+    if not email:
+        return jsonify({"success": False, "error": "Email required"}), 400
     otp = str(random.randint(100000, 999999))
     expiry = datetime.now() + timedelta(minutes=10)
     conn = get_db(); cur = conn.cursor()
     cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s, %s, %s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (email, otp, expiry, otp, expiry))
     conn.commit(); cur.close(); conn.close()
-    resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO OTP","html": f"<h1>{otp}</h1><p>Valid 10 min</p>"})
+    try:
+        resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO OTP","html": f"<h1>{otp}</h1><p>Valid 10 min</p>"})
+    except Exception as e:
+        print(f"Resend error: {e}")
     return jsonify({"success": True})
+
+# --- NAYA ROUTE - SIRF OTP CHECK KAREGA ---
+@app.route('/check-otp', methods=['POST'])
+def check_otp():
+    data = request.get_json()
+    email = data.get('email')
+    user_otp = data.get('otp')
+    if not email or not user_otp:
+        return jsonify({"success": False, "error": "Email and OTP required"}), 400
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT otp_code, expires_at FROM otps WHERE email=%s", (email,))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+
+    if not row:
+        return jsonify({"success": False, "error": "No OTP found. Please resend."}), 400
+
+    db_otp, expiry = row
+    if datetime.now() > expiry:
+        return jsonify({"success": False, "error": "OTP expired. Resend again."}), 400
+
+    if db_otp!= user_otp:
+        return jsonify({"success": False, "error": "Invalid OTP. Check email."}), 400
+
+    return jsonify({"success": True, "message": "OTP verified"})
 
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp():
@@ -51,18 +78,59 @@ def verify_otp():
     conn = get_db(); cur = conn.cursor()
     cur.execute("SELECT otp_code, expires_at FROM otps WHERE email=%s", (email,))
     row = cur.fetchone()
-    if not row: cur.close(); conn.close(); return jsonify({"success": False, "message": "OTP not sent"})
+    if not row: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP not sent"}), 400
     db_otp, expiry = row
-    if datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "message": "OTP expired"})
+    if datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP expired"}), 400
     if db_otp == user_otp:
         if name and password:
             cur.execute("INSERT INTO users (name, phone, email, password) VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO UPDATE SET name=%s, phone=%s, password=%s", (name, phone, email, password, name, phone, password))
             conn.commit()
+            cur.execute("SELECT id, name, phone, email FROM users WHERE email=%s", (email,))
+            u = cur.fetchone()
+            cur.close(); conn.close()
+            return jsonify({"success": True, "user": {"id": u[0], "name": u[1], "phone": u[2], "email": u[3]}})
         cur.close(); conn.close()
         return jsonify({"success": True})
     else:
         cur.close(); conn.close()
-        return jsonify({"success": False, "message": "Wrong OTP"})
+        return jsonify({"success": False, "error": "Wrong OTP"}), 400
+
+# --- LOGIN ROUTE ADD KIYA ---
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT id, name, phone, email, password FROM users WHERE email=%s OR phone=%s", (email, email))
+    row = cur.fetchone()
+    cur.close(); conn.close()
+    if not row:
+        return jsonify({"success": False, "error": "User not found. Please register."}), 400
+    if row[4]!= password:
+        return jsonify({"success": False, "error": "Wrong password"}), 400
+    return jsonify({"success": True, "user": {"id": row[0], "name": row[1], "phone": row[2], "email": row[3]}})
+
+# --- RESET PASSWORD ROUTE ADD KIYA ---
+@app.route('/reset-password', methods=['POST'])
+def reset_password():
+    data = request.get_json()
+    email = data.get('email')
+    otp = data.get('otp')
+    new_pass = data.get('new_password')
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT otp_code, expires_at FROM otps WHERE email=%s", (email,))
+    row = cur.fetchone()
+    if not row: cur.close(); conn.close(); return jsonify({"success": False, "error": "No OTP found"}), 400
+    db_otp, expiry = row
+    if datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP expired"}), 400
+    if db_otp!= otp: cur.close(); conn.close(); return jsonify({"success": False, "error": "Invalid OTP"}), 400
+
+    cur.execute("UPDATE users SET password=%s WHERE email=%s", (new_pass, email))
+    conn.commit()
+    cur.close(); conn.close()
+    return jsonify({"success": True, "message": "Password updated"})
 
 @app.route('/admin-users')
 def admin_users():
@@ -76,6 +144,7 @@ def admin_users():
         return f"<html><head><meta name='viewport' content='width=device-width'><style>body{{font-family:sans-serif;background:#f4f6f9;padding:15px}}.header{{background:linear-gradient(135deg,#6e00ff,#ff00a0);color:white;padding:20px;border-radius:15px}} table{{width:100%;background:white;border-radius:10px;border-collapse:collapse}} th,td{{padding:12px 10px;border-bottom:1px solid #eee;text-align:left;font-size:12px}}</style></head><body><div class='header'><h2>REKAVO Admin - Total: {len(rows)}</h2></div><div style='overflow-x:auto;margin-top:15px;'><table><tr><th>ID</th><th>Name</th><th>Mobile</th><th>Email</th><th>Pass</th><th>Date</th><th>Action</th></tr>{html_rows or '<tr><td colspan=7 style=text-align:center;padding:30px>No users</td></tr>'}</table></div></body></html>"
     except Exception as e:
         return f"Error: {str(e)} - /create-table khol ke pehle FIX karo"
+
 @app.route('/delete-user/<int:user_id>')
 def delete_user(user_id):
     conn = get_db(); cur = conn.cursor()
@@ -83,6 +152,7 @@ def delete_user(user_id):
     cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
     conn.commit(); cur.close(); conn.close()
     return f"User #{user_id} Deleted. <a href='/admin-users'>Back to Admin</a>"
+
 @app.route('/admin-user/<int:user_id>')
 def admin_user_detail(user_id):
     conn=get_db(); cur=conn.cursor()
@@ -94,4 +164,4 @@ def admin_user_detail(user_id):
     return f"<html><body style='font-family:sans-serif;padding:20px'><a href='/admin-users'>Back</a><h2>{user[1]} (#{user[0]})</h2><p>{user[3]} | {user[2]}</p><h3>Orders: {len(orders)}</h3></body></html>"
 
 @app.route('/')
-def home(): return "REKAVO Fixed"
+def home(): return "REKAVO Fixed - OTP Lock Enabled"
