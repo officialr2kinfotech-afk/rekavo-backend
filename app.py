@@ -76,7 +76,13 @@ def admin_users():
         return f"<html><head><meta name='viewport' content='width=device-width'><style>body{{font-family:sans-serif;background:#f4f6f9;padding:15px}}.header{{background:linear-gradient(135deg,#6e00ff,#ff00a0);color:white;padding:20px;border-radius:15px}} table{{width:100%;background:white;border-radius:10px;border-collapse:collapse}} th,td{{padding:12px 10px;border-bottom:1px solid #eee;text-align:left;font-size:12px}}</style></head><body><div class='header'><h2>REKAVO Admin - Total: {len(rows)}</h2></div><div style='overflow-x:auto;margin-top:15px;'><table><tr><th>ID</th><th>Name</th><th>Mobile</th><th>Email</th><th>Pass</th><th>Date</th><th>Action</th></tr>{html_rows or '<tr><td colspan=7 style=text-align:center;padding:30px>No users</td></tr>'}</table></div></body></html>"
     except Exception as e:
         return f"Error: {str(e)} - /create-table khol ke pehle FIX karo"
-
+@app.route('/delete-user/<int:user_id>')
+def delete_user(user_id):
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM orders WHERE user_id=%s", (user_id,))
+    cur.execute("DELETE FROM users WHERE id=%s", (user_id,))
+    conn.commit(); cur.close(); conn.close()
+    return f"User #{user_id} Deleted. <a href='/admin-users'>Back to Admin</a>"
 @app.route('/admin-user/<int:user_id>')
 def admin_user_detail(user_id):
     conn=get_db(); cur=conn.cursor()
