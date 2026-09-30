@@ -104,16 +104,29 @@ def verify_otp():
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
-    email = data.get('email')
+    login_text = data.get('email','').strip().lower()
     password = data.get('password')
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT id, name, phone, email, password FROM users WHERE email=%s OR phone=%s", (email, email))
-    row = cur.fetchone()
-    cur.close(); conn.close()
-    if not row: return jsonify({"success": False, "error": "User not found. Please register."}), 400
-    if row[4]!= password: return jsonify({"success": False, "error": "Wrong password"}), 400
-    return jsonify({"success": True, "user": {"id": row[0], "name": row[1], "phone": row[2], "email": row[3]}})
 
+    user = users_collection.find_one({"email": login_text})
+    if not user:
+        user = users_collection.find_one({"phone": login_text})
+
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+
+    # password check yaha lagana
+    if user.get("password") != password:
+        return jsonify({"success": False, "error": "Wrong password"}), 400
+
+    return jsonify({
+        "success": True,
+        "user": {
+            "id": str(user.get("_id")), # YE ADD KARNA HAI
+            "name": user.get("name"),
+            "email": user.get("email"), # YEHI MAIN KEY HAI - tu sahi kar raha hai
+            "phone": user.get("phone")
+        }
+    })
 @app.route('/reset-password', methods=['POST'])
 def reset_password():
     data = request.get_json()
