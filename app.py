@@ -22,10 +22,15 @@ def create_table():
     cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name VARCHAR(255), email VARCHAR(255) UNIQUE, password VARCHAR(255), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, user_id INTEGER, product_name VARCHAR(255), amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20);")
+    # === NAYA TABLES - CROSS DEVICE KE LIYE ===
+    cur.execute("CREATE TABLE IF NOT EXISTS carts (id SERIAL PRIMARY KEY, email VARCHAR(255), product_id VARCHAR(255), name TEXT, price INTEGER, qty INTEGER DEFAULT 1, image TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+    cur.execute("CREATE TABLE IF NOT EXISTS wishlists (id SERIAL PRIMARY KEY, email VARCHAR(255), product_id VARCHAR(255), name TEXT, price INTEGER, image TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+    cur.execute("CREATE TABLE IF NOT EXISTS user_addresses (id SERIAL PRIMARY KEY, email VARCHAR(255), full_name VARCHAR(255), phone VARCHAR(20), pincode VARCHAR(20), full_address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+    cur.execute("CREATE TABLE IF NOT EXISTS user_orders (id SERIAL PRIMARY KEY, email VARCHAR(255), order_id VARCHAR(100), product_name TEXT, amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     conn.commit()
     cur.close()
     conn.close()
-    return "REKAVO FIXED - All tables ready"
+    return "REKAVO FIXED - All tables ready + Cart/Wishlist/Orders/Address ready"
 
 @app.route('/send-otp', methods=['POST'])
 def send_otp():
@@ -126,6 +131,85 @@ def reset_password():
     cur.close(); conn.close()
     return jsonify({"success": True, "message": "Password updated"})
 
+# ========= NAYA REAL CART / WISHLIST / ADDRESS / ORDERS API - CROSS DEVICE =========
+
+@app.route('/cart/get', methods=['GET'])
+def cart_get():
+    email = request.args.get('email','').lower()
+    if not email: return jsonify([])
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE email=%s", (email,))
+    rows=cur.fetchall(); cur.close(); conn.close()
+    return jsonify([{"product_id": r[0], "name": r[1], "price": r[2], "qty": r[3], "image": r[4]} for r in rows])
+
+@app.route('/cart/add', methods=['POST'])
+def cart_add():
+    d=request.get_json(); email=d.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT qty FROM carts WHERE email=%s AND product_id=%s", (email, d['product_id']))
+    r=cur.fetchone()
+    if r:
+        cur.execute("UPDATE carts SET qty=qty+%s WHERE email=%s AND product_id=%s", (d.get('qty',1), email, d['product_id']))
+    else:
+        cur.execute("INSERT INTO carts (email, product_id, name, price, qty, image) VALUES (%s,%s,%s,%s,%s,%s)", (email, d['product_id'], d['name'], d['price'], d.get('qty',1), d.get('image','')))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True})
+
+@app.route('/cart/remove', methods=['POST'])
+def cart_remove():
+    d=request.get_json(); email=d.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("DELETE FROM carts WHERE email=%s AND product_id=%s", (email, d['product_id']))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True})
+
+@app.route('/wishlist/get', methods=['GET'])
+def wishlist_get():
+    email=request.args.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT product_id, name, price, image FROM wishlists WHERE email=%s", (email,))
+    rows=cur.fetchall(); cur.close(); conn.close()
+    return jsonify([{"product_id": r[0], "name": r[1], "price": r[2], "image": r[3]} for r in rows])
+
+@app.route('/wishlist/toggle', methods=['POST'])
+def wishlist_toggle():
+    d=request.get_json(); email=d.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT id FROM wishlists WHERE email=%s AND product_id=%s", (email, d['product_id']))
+    r=cur.fetchone()
+    if r:
+        cur.execute("DELETE FROM wishlists WHERE email=%s AND product_id=%s", (email, d['product_id']))
+        action="removed"
+    else:
+        cur.execute("INSERT INTO wishlists (email, product_id, name, price, image) VALUES (%s,%s,%s,%s,%s)", (email, d['product_id'], d['name'], d['price'], d.get('image','')))
+        action="added"
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True, "action": action})
+
+@app.route('/orders/get', methods=['GET'])
+def orders_get():
+    email=request.args.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT order_id, product_name, amount, status, created_at FROM user_orders WHERE email=%s ORDER BY id DESC", (email,))
+    rows=cur.fetchall(); cur.close(); conn.close()
+    return jsonify([{"order_id": r[0], "product_name": r[1], "amount": r[2], "status": r[3], "date": str(r[4])} for r in rows])
+
+@app.route('/address/get', methods=['GET'])
+def address_get():
+    email=request.args.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE email=%s", (email,))
+    rows=cur.fetchall(); cur.close(); conn.close()
+    return jsonify([{"id": r[0], "full_name": r[1], "phone": r[2], "pincode": r[3], "full_address": r[4]} for r in rows])
+
+@app.route('/address/add', methods=['POST'])
+def address_add():
+    d=request.get_json(); email=d.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("INSERT INTO user_addresses (email, full_name, phone, pincode, full_address) VALUES (%s,%s,%s,%s,%s)", (email, d['full_name'], d['phone'], d['pincode'], d['full_address']))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True})
+
 @app.route('/admin-users')
 def admin_users():
     try:
@@ -140,7 +224,7 @@ def admin_users():
         return f"Error: {str(e)}"
 
 @app.route('/')
-def home(): return "REKAVO Fixed - OTP Lock Enabled"
+def home(): return "REKAVO Fixed - OTP Lock Enabled + Cart/Wishlist Ready"
 
 @app.route('/delete-user/<int:user_id>')
 def delete_user(user_id):
