@@ -44,7 +44,6 @@ def send_otp():
         print(f"Resend error: {e}")
     return jsonify({"success": True, "message": "OTP sent"})
 
-# --- FINAL LOCKED ROUTE ---
 @app.route('/check-otp', methods=['POST'])
 def check_otp():
     data = request.get_json()
@@ -52,29 +51,21 @@ def check_otp():
     user_otp = str(data.get('otp')).strip()
     if not email or not user_otp:
         return jsonify({"success": False, "error": "Email and OTP required"}), 400
-
     conn = get_db(); cur = conn.cursor()
     cur.execute("SELECT otp_code, expires_at FROM otps WHERE email=%s", (email,))
     row = cur.fetchone()
-
     if not row:
         cur.close(); conn.close()
         return jsonify({"success": False, "error": "No OTP found. Please resend."}), 400
-
     db_otp, expiry = row
     if datetime.now() > expiry:
         cur.execute("DELETE FROM otps WHERE email=%s", (email,))
         conn.commit()
         cur.close(); conn.close()
         return jsonify({"success": False, "error": "OTP expired. Resend again."}), 400
-
     if str(db_otp).strip()!= user_otp:
         cur.close(); conn.close()
         return jsonify({"success": False, "error": "Invalid OTP. Check email."}), 400
-
-    # Sahi hai toh OTP delete karo - ek baar hi chalega
-    cur.execute("DELETE FROM otps WHERE email=%s", (email,))
-    conn.commit()
     cur.close(); conn.close()
     return jsonify({"success": True, "message": "OTP verified"})
 
