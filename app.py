@@ -1,3 +1,4 @@
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os, random
@@ -22,19 +23,14 @@ def create_table():
     cur.execute("CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name VARCHAR(255), email VARCHAR(255) UNIQUE, password VARCHAR(255), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS orders (id SERIAL PRIMARY KEY, user_id INTEGER, product_name VARCHAR(255), amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20);")
-
-    # CROSS DEVICE TABLES - FINAL
     cur.execute("CREATE TABLE IF NOT EXISTS carts (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), product_id VARCHAR(255), name TEXT, price INTEGER, qty INTEGER DEFAULT 1, image TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS wishlists (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), product_id VARCHAR(255), name TEXT, price INTEGER, image TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_addresses (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), full_name VARCHAR(255), phone VARCHAR(20), pincode VARCHAR(20), full_address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_orders (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), order_id VARCHAR(100), product_name TEXT, amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-
-    # purane tables me user_id add karna
     cur.execute("ALTER TABLE carts ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     cur.execute("ALTER TABLE wishlists ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     cur.execute("ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS user_id INTEGER;")
-
     conn.commit()
     cur.close()
     conn.close()
@@ -109,7 +105,6 @@ def verify_otp():
         cur.close(); conn.close()
         return jsonify({"success": False, "error": "Wrong OTP"}), 400
 
-# ========= FINAL LOGIN - NEON + EMAIL OR PHONE DONO SE =========
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -117,26 +112,15 @@ def login():
     password = data.get('password')
     if not login_text or not password:
         return jsonify({"success": False, "error": "Email/Phone and password required"}), 400
-
     conn = get_db(); cur = conn.cursor()
     cur.execute("SELECT id, name, phone, email, password FROM users WHERE LOWER(email)=%s OR phone=%s", (login_text, login_text))
     row = cur.fetchone()
     cur.close(); conn.close()
-
     if not row:
         return jsonify({"success": False, "error": "User not found"}), 404
     if row[4]!= password:
         return jsonify({"success": False, "error": "Wrong password"}), 400
-
-    return jsonify({
-        "success": True,
-        "user": {
-            "id": row[0],
-            "name": row[1],
-            "phone": row[2],
-            "email": row[3]
-        }
-    })
+    return jsonify({"success": True, "user": {"id": row[0], "name": row[1], "phone": row[2], "email": row[3]}})
 
 @app.route('/reset-password', methods=['POST'])
 def reset_password():
@@ -155,8 +139,7 @@ def reset_password():
     cur.close(); conn.close()
     return jsonify({"success": True, "message": "Password updated"})
 
-# ========= CART / WISHLIST / ORDERS / ADDRESS - SAB user_id SE =========
-
+# CART / WISHLIST / ORDERS / ADDRESS - SAB user_id SE
 @app.route('/cart/get', methods=['GET'])
 def cart_get():
     user_id = request.args.get('user_id')
@@ -203,6 +186,19 @@ def cart_remove():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True})
 
+@app.route('/cart/clear', methods=['POST'])
+def cart_clear():
+    d=request.get_json()
+    user_id = d.get('user_id')
+    email = d.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    if user_id:
+        cur.execute("DELETE FROM carts WHERE user_id=%s", (user_id,))
+    else:
+        cur.execute("DELETE FROM carts WHERE LOWER(email)=%s", (email,))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True})
+
 @app.route('/wishlist/get', methods=['GET'])
 def wishlist_get():
     user_id = request.args.get('user_id')
@@ -233,7 +229,7 @@ def wishlist_toggle():
             cur.execute("DELETE FROM wishlists WHERE LOWER(email)=%s AND product_id=%s", (email, d['product_id']))
         action="removed"
     else:
-        cur.execute("INSERT INTO wishlists (user_id, email, product_id, name, price, image) VALUES (%s,%s,%s,%s,%s)", (user_id, email, d['product_id'], d['name'], d['price'], d.get('image','')))
+        cur.execute("INSERT INTO wishlists (user_id, email, product_id, name, price, image) VALUES (%s,%s,%s,%s,%s,%s)", (user_id, email, d['product_id'], d['name'], d['price'], d.get('image','')))
         action="added"
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True, "action": action})
@@ -250,15 +246,30 @@ def orders_get():
     rows=cur.fetchall(); cur.close(); conn.close()
     return jsonify([{"order_id": r[0], "product_name": r[1], "amount": r[2], "status": r[3], "date": str(r[4])} for r in rows])
 
+@app.route('/place-order', methods=['POST'])
+def place_order():
+    d=request.get_json()
+    user_id = d.get('user_id')
+    email = d.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    order_id = f"REKAVO{random.randint(10000,99999)}"
+    cur.execute("INSERT INTO user_orders (user_id, email, order_id, product_name, amount, status) VALUES (%s,%s,%s,%s,%s,%s)", (user_id, email, order_id, d.get('product_name','REKAVO Order'), d.get('amount',0), 'Pending'))
+    if user_id:
+        cur.execute("DELETE FROM carts WHERE user_id=%s", (user_id,))
+    else:
+        cur.execute("DELETE FROM carts WHERE LOWER(email)=%s", (email,))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True, "order_id": order_id})
+
 @app.route('/address/get', methods=['GET'])
 def address_get():
     user_id = request.args.get('user_id')
     email=request.args.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
     if user_id:
-        cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE user_id=%s", (user_id,))
+        cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (user_id,))
     else:
-        cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE LOWER(email)=%s", (email,))
+        cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
     rows=cur.fetchall(); cur.close(); conn.close()
     return jsonify([{"id": r[0], "full_name": r[1], "phone": r[2], "pincode": r[3], "full_address": r[4]} for r in rows])
 
@@ -268,7 +279,15 @@ def address_add():
     user_id = d.get('user_id')
     email=d.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
-    cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address) VALUES (%s,%s,%s,%s,%s)", (user_id, email, d['full_name'], d['phone'], d['pincode'], d['full_address']))
+    cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address) VALUES (%s,%s,%s,%s,%s,%s)", (user_id, email, d['full_name'], d['phone'], d['pincode'], d['full_address']))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True})
+
+@app.route('/address/delete', methods=['POST'])
+def address_delete():
+    d=request.get_json()
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("DELETE FROM user_addresses WHERE id=%s", (d.get('id'),))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True})
 
