@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os, random
@@ -139,39 +138,124 @@ def reset_password():
     cur.close(); conn.close()
     return jsonify({"success": True, "message": "Password updated"})
 
-# CART / WISHLIST / ORDERS / ADDRESS - SAB user_id SE
+# ========== CART - FIXED (172 BUG KHATAM) ==========
 @app.route('/cart/get', methods=['GET'])
 def cart_get():
     user_id = request.args.get('user_id')
     email = request.args.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
-    if user_id:
-        cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE user_id=%s", (user_id,))
-    else:
-        cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE LOWER(email)=%s", (email,))
-    rows=cur.fetchall(); cur.close(); conn.close()
-    return jsonify([{"product_id": r[0], "name": r[1], "price": r[2], "qty": r[3], "image": r[4]} for r in rows])
+    try:
+        if user_id:
+            # user_id int ho sakta hai, safe cast
+            try:
+                uid_int = int(user_id)
+                cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE user_id=%s", (uid_int,))
+            except:
+                cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE user_id=%s OR LOWER(email)=%s", (user_id, email))
+        else:
+            if not email:
+                cur.close(); conn.close()
+                return jsonify([])
+            cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE LOWER(email)=%s", (email,))
+        rows=cur.fetchall()
+
+        # CLEANING: 171 ko 1 bana do, duplicate merge
+        cleaned_dict = {}
+        for r in rows:
+            pid, name, price, qty, image = r
+            if not pid:
+                continue
+            # 171 wala bug fix
+            if qty is None:
+                qty = 1
+            if qty > 10:
+                qty = 1
+            if qty > 5:
+                qty = 5
+            if pid in cleaned_dict:
+                # merge but max 5
+                old_qty = cleaned_dict[pid]['qty']
+                new_qty = min(5, old_qty + qty)
+                cleaned_dict[pid]['qty'] = new_qty
+            else:
+                cleaned_dict[pid] = {"product_id": pid, "name": name, "price": price, "qty": qty, "image": image}
+
+        result = list(cleaned_dict.values())
+        cur.close(); conn.close()
+        return jsonify(result)
+    except Exception as e:
+        print(e)
+        cur.close(); conn.close()
+        return jsonify([])
 
 @app.route('/cart/add', methods=['POST'])
 def cart_add():
     d=request.get_json()
     user_id = d.get('user_id')
-    email = d.get('email','').lower()
+    email = (d.get('email') or '').lower()
+    product_id = d.get('product_id')
+    if not product_id:
+        return jsonify({"success": False, "error": "product_id required"}), 400
+
+    # qty ko limit karo
+    req_qty = d.get('qty', 1)
+    try:
+        req_qty = int(req_qty)
+    except:
+        req_qty = 1
+    if req_qty > 5 or req_qty < 1:
+        req_qty = 1
+
     conn=get_db(); cur=conn.cursor()
-    if user_id:
-        cur.execute("SELECT qty FROM carts WHERE user_id=%s AND product_id=%s", (user_id, d['product_id']))
-    else:
-        cur.execute("SELECT qty FROM carts WHERE LOWER(email)=%s AND product_id=%s", (email, d['product_id']))
-    r=cur.fetchone()
-    if r:
+    try:
+        # existing check - user_id se
         if user_id:
-            cur.execute("UPDATE carts SET qty=qty+%s WHERE user_id=%s AND product_id=%s", (d.get('qty',1), user_id, d['product_id']))
+            try:
+                uid_int = int(user_id)
+                cur.execute("SELECT qty FROM carts WHERE user_id=%s AND product_id=%s", (uid_int, product_id))
+                r=cur.fetchone()
+                if r:
+                    old_qty = r[0] or 1
+                    # agar old 171 hai to reset
+                    if old_qty > 10:
+                        old_qty = 0
+                    new_qty = old_qty + req_qty
+                    if new_qty > 5:
+                        new_qty = 5
+                    cur.execute("UPDATE carts SET qty=%s, name=%s, price=%s, image=%s WHERE user_id=%s AND product_id=%s", (new_qty, d.get('name'), d.get('price'), d.get('image',''), uid_int, product_id))
+                else:
+                    cur.execute("INSERT INTO carts (user_id, email, product_id, name, price, qty, image) VALUES (%s,%s,%s,%s,%s,%s,%s)", (uid_int, email, product_id, d.get('name'), d.get('price'), req_qty, d.get('image','')))
+            except Exception as e:
+                # fallback if user_id not int
+                cur.execute("SELECT qty FROM carts WHERE user_id=%s AND product_id=%s", (user_id, product_id))
+                r=cur.fetchone()
+                if r:
+                    old_qty = r[0] or 1
+                    if old_qty > 10: old_qty = 0
+                    new_qty = min(5, old_qty + req_qty)
+                    cur.execute("UPDATE carts SET qty=%s WHERE user_id=%s AND product_id=%s", (new_qty, user_id, product_id))
+                else:
+                    cur.execute("INSERT INTO carts (user_id, email, product_id, name, price, qty, image) VALUES (%s,%s,%s,%s,%s,%s,%s)", (user_id, email, product_id, d.get('name'), d.get('price'), req_qty, d.get('image','')))
         else:
-            cur.execute("UPDATE carts SET qty=qty+%s WHERE LOWER(email)=%s AND product_id=%s", (d.get('qty',1), email, d['product_id']))
-    else:
-        cur.execute("INSERT INTO carts (user_id, email, product_id, name, price, qty, image) VALUES (%s,%s,%s,%s,%s,%s,%s)", (user_id, email, d['product_id'], d['name'], d['price'], d.get('qty',1), d.get('image','')))
-    conn.commit(); cur.close(); conn.close()
-    return jsonify({"success": True})
+            if not email:
+                cur.close(); conn.close()
+                return jsonify({"success": False}), 400
+            cur.execute("SELECT qty FROM carts WHERE LOWER(email)=%s AND product_id=%s", (email, product_id))
+            r=cur.fetchone()
+            if r:
+                old_qty = r[0] or 1
+                if old_qty > 10: old_qty = 0
+                new_qty = min(5, old_qty + req_qty)
+                cur.execute("UPDATE carts SET qty=%s WHERE LOWER(email)=%s AND product_id=%s", (new_qty, email, product_id))
+            else:
+                cur.execute("INSERT INTO carts (user_id, email, product_id, name, price, qty, image) VALUES (%s,%s,%s,%s,%s,%s,%s)", (None, email, product_id, d.get('name'), d.get('price'), req_qty, d.get('image','')))
+
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        print(f"cart/add error: {e}")
+        cur.close(); conn.close()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/cart/remove', methods=['POST'])
 def cart_remove():
@@ -180,7 +264,11 @@ def cart_remove():
     email = d.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
     if user_id:
-        cur.execute("DELETE FROM carts WHERE user_id=%s AND product_id=%s", (user_id, d['product_id']))
+        try:
+            uid_int = int(user_id)
+            cur.execute("DELETE FROM carts WHERE user_id=%s AND product_id=%s", (uid_int, d['product_id']))
+        except:
+            cur.execute("DELETE FROM carts WHERE user_id=%s AND product_id=%s", (user_id, d['product_id']))
     else:
         cur.execute("DELETE FROM carts WHERE LOWER(email)=%s AND product_id=%s", (email, d['product_id']))
     conn.commit(); cur.close(); conn.close()
@@ -193,11 +281,52 @@ def cart_clear():
     email = d.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
     if user_id:
-        cur.execute("DELETE FROM carts WHERE user_id=%s", (user_id,))
+        try:
+            uid_int = int(user_id)
+            cur.execute("DELETE FROM carts WHERE user_id=%s", (uid_int,))
+        except:
+            cur.execute("DELETE FROM carts WHERE user_id=%s", (user_id,))
     else:
         cur.execute("DELETE FROM carts WHERE LOWER(email)=%s", (email,))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True})
+
+# FIX CART - ek baar 172 ko saaf karne ke liye
+@app.route('/cart/fix', methods=['POST'])
+def cart_fix():
+    d=request.get_json()
+    user_id = d.get('user_id')
+    email = d.get('email','').lower()
+    conn=get_db(); cur=conn.cursor()
+    if user_id:
+        try: uid_int = int(user_id)
+        except: uid_int = user_id
+        cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE user_id=%s", (uid_int,))
+    else:
+        cur.execute("SELECT product_id, name, price, qty, image FROM carts WHERE LOWER(email)=%s", (email,))
+    rows=cur.fetchall()
+    # merge
+    merged={}
+    for r in rows:
+        pid=r[0]
+        qty=r[3] or 1
+        if qty>10: qty=1
+        if qty>5: qty=5
+        if pid in merged:
+            merged[pid]=(merged[pid][0], merged[pid][1], merged[pid][2], min(5, merged[pid][3]+qty), merged[pid][4])
+        else:
+            merged[pid]=(r[0], r[1], r[2], qty, r[4])
+    # delete and re-insert
+    if user_id:
+        cur.execute("DELETE FROM carts WHERE user_id=%s", (uid_int,))
+        for v in merged.values():
+            cur.execute("INSERT INTO carts (user_id, email, product_id, name, price, qty, image) VALUES (%s,%s,%s,%s,%s,%s,%s)", (uid_int, email, v[0], v[1], v[2], v[3], v[4]))
+    else:
+        cur.execute("DELETE FROM carts WHERE LOWER(email)=%s", (email,))
+        for v in merged.values():
+            cur.execute("INSERT INTO carts (user_id, email, product_id, name, price, qty, image) VALUES (%s,%s,%s,%s,%s,%s,%s)", (None, email, v[0], v[1], v[2], v[3], v[4]))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"fixed": list(merged.values())})
 
 @app.route('/wishlist/get', methods=['GET'])
 def wishlist_get():
@@ -205,7 +334,11 @@ def wishlist_get():
     email=request.args.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
     if user_id:
-        cur.execute("SELECT product_id, name, price, image FROM wishlists WHERE user_id=%s", (user_id,))
+        try:
+            uid_int=int(user_id)
+            cur.execute("SELECT product_id, name, price, image FROM wishlists WHERE user_id=%s", (uid_int,))
+        except:
+            cur.execute("SELECT product_id, name, price, image FROM wishlists WHERE user_id=%s", (user_id,))
     else:
         cur.execute("SELECT product_id, name, price, image FROM wishlists WHERE LOWER(email)=%s", (email,))
     rows=cur.fetchall(); cur.close(); conn.close()
@@ -218,18 +351,25 @@ def wishlist_toggle():
     email=d.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
     if user_id:
-        cur.execute("SELECT id FROM wishlists WHERE user_id=%s AND product_id=%s", (user_id, d['product_id']))
+        try:
+            uid_int=int(user_id)
+            cur.execute("SELECT id FROM wishlists WHERE user_id=%s AND product_id=%s", (uid_int, d['product_id']))
+        except:
+            cur.execute("SELECT id FROM wishlists WHERE user_id=%s AND product_id=%s", (user_id, d['product_id']))
     else:
         cur.execute("SELECT id FROM wishlists WHERE LOWER(email)=%s AND product_id=%s", (email, d['product_id']))
     r=cur.fetchone()
     if r:
         if user_id:
-            cur.execute("DELETE FROM wishlists WHERE user_id=%s AND product_id=%s", (user_id, d['product_id']))
+            try: cur.execute("DELETE FROM wishlists WHERE user_id=%s AND product_id=%s", (int(user_id), d['product_id']))
+            except: cur.execute("DELETE FROM wishlists WHERE user_id=%s AND product_id=%s", (user_id, d['product_id']))
         else:
             cur.execute("DELETE FROM wishlists WHERE LOWER(email)=%s AND product_id=%s", (email, d['product_id']))
         action="removed"
     else:
-        cur.execute("INSERT INTO wishlists (user_id, email, product_id, name, price, image) VALUES (%s,%s,%s,%s,%s,%s)", (user_id, email, d['product_id'], d['name'], d['price'], d.get('image','')))
+        try: uid_int=int(user_id) if user_id else None
+        except: uid_int=user_id
+        cur.execute("INSERT INTO wishlists (user_id, email, product_id, name, price, image) VALUES (%s,%s,%s,%s,%s,%s)", (uid_int, email, d['product_id'], d['name'], d['price'], d.get('image','')))
         action="added"
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True, "action": action})
@@ -240,7 +380,11 @@ def orders_get():
     email=request.args.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
     if user_id:
-        cur.execute("SELECT order_id, product_name, amount, status, created_at FROM user_orders WHERE user_id=%s ORDER BY id DESC", (user_id,))
+        try:
+            uid_int=int(user_id)
+            cur.execute("SELECT order_id, product_name, amount, status, created_at FROM user_orders WHERE user_id=%s ORDER BY id DESC", (uid_int,))
+        except:
+            cur.execute("SELECT order_id, product_name, amount, status, created_at FROM user_orders WHERE user_id=%s ORDER BY id DESC", (user_id,))
     else:
         cur.execute("SELECT order_id, product_name, amount, status, created_at FROM user_orders WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
     rows=cur.fetchall(); cur.close(); conn.close()
@@ -250,16 +394,44 @@ def orders_get():
 def place_order():
     d=request.get_json()
     user_id = d.get('user_id')
-    email = d.get('email','').lower()
+    email = (d.get('email') or '').lower()
+    # checkout wala naya format handle
+    product_name = d.get('product_name') or d.get('full_name') or 'REKAVO Order'
+    if d.get('items'):
+        # items array hai to first item ka naam + count
+        items = d.get('items')
+        if isinstance(items, list) and len(items)>0:
+            product_name = items[0].get('name','REKAVO Order')
+            if len(items)>1:
+                product_name = f"{product_name} + {len(items)-1} more"
+    amount = d.get('amount') or d.get('total') or 0
+    try: amount = int(amount)
+    except: amount = 0
+
     conn=get_db(); cur=conn.cursor()
-    order_id = f"REKAVO{random.randint(10000,99999)}"
-    cur.execute("INSERT INTO user_orders (user_id, email, order_id, product_name, amount, status) VALUES (%s,%s,%s,%s,%s,%s)", (user_id, email, order_id, d.get('product_name','REKAVO Order'), d.get('amount',0), 'Pending'))
+    order_id = d.get('order_id') or f"REKAVO{random.randint(10000,99999)}"
+    try:
+        uid_int = int(user_id) if user_id else None
+    except:
+        uid_int = user_id
+    cur.execute("INSERT INTO user_orders (user_id, email, order_id, product_name, amount, status) VALUES (%s,%s,%s,%s,%s,%s)", (uid_int, email, order_id, product_name, amount, 'Placed'))
     if user_id:
-        cur.execute("DELETE FROM carts WHERE user_id=%s", (user_id,))
+        try: cur.execute("DELETE FROM carts WHERE user_id=%s", (int(user_id),))
+        except: cur.execute("DELETE FROM carts WHERE user_id=%s", (user_id,))
     else:
-        cur.execute("DELETE FROM carts WHERE LOWER(email)=%s", (email,))
+        if email:
+            cur.execute("DELETE FROM carts WHERE LOWER(email)=%s", (email,))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True, "order_id": order_id})
+
+# ALIAS for checkout.html - ye missing tha isliye order nahi lag raha tha
+@app.route('/orders/add', methods=['POST'])
+def orders_add():
+    return place_order()
+
+@app.route('/orders/create', methods=['POST'])
+def orders_create():
+    return place_order()
 
 @app.route('/address/get', methods=['GET'])
 def address_get():
@@ -267,7 +439,10 @@ def address_get():
     email=request.args.get('email','').lower()
     conn=get_db(); cur=conn.cursor()
     if user_id:
-        cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (user_id,))
+        try:
+            cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (int(user_id),))
+        except:
+            cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (user_id,))
     else:
         cur.execute("SELECT id, full_name, phone, pincode, full_address FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
     rows=cur.fetchall(); cur.close(); conn.close()
@@ -277,9 +452,11 @@ def address_get():
 def address_add():
     d=request.get_json()
     user_id = d.get('user_id')
-    email=d.get('email','').lower()
+    email=(d.get('email') or '').lower()
     conn=get_db(); cur=conn.cursor()
-    cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address) VALUES (%s,%s,%s,%s,%s,%s)", (user_id, email, d['full_name'], d['phone'], d['pincode'], d['full_address']))
+    try: uid_int=int(user_id) if user_id else None
+    except: uid_int=user_id
+    cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address) VALUES (%s,%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address')))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True})
 
@@ -305,7 +482,7 @@ def admin_users():
         return f"Error: {str(e)}"
 
 @app.route('/')
-def home(): return "REKAVO Fixed - Neon DB - Cross Device Ready"
+def home(): return "REKAVO Fixed - Neon DB - Cross Device Ready - 172 Bug Fixed"
 
 @app.route('/delete-user/<int:user_id>')
 def delete_user(user_id):
@@ -324,3 +501,6 @@ def admin_user_detail(user_id):
     orders=cur.fetchall()
     cur.close(); conn.close()
     return f"<html><body style='font-family:sans-serif;padding:20px'><a href='/admin-users'>Back</a><h2>{user[1]} (#{user[0]})</h2><p>{user[3]} | {user[2]}</p><h3>Orders: {len(orders)}</h3></body></html>"
+
+if __name__ == '__main__':
+    app.run()
