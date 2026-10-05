@@ -1,4 +1,6 @@
 Flask
 flask-cors
-resend
 psycopg2-binary
+resend
+PyJWT
+werkzeug
