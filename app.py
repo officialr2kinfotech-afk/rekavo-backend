@@ -65,7 +65,7 @@ def create_table():
 @app.route('/send-otp', methods=['POST'])
 def send_otp():
     data = request.get_json()
-    email = data.get('email')
+    email = data.get('email','').lower().strip()
     if not email: return jsonify({"success": False, "error": "Email required"}), 400
     otp = str(random.randint(100000, 999999))
     expiry = datetime.now() + timedelta(minutes=10)
@@ -80,10 +80,11 @@ def send_otp():
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp():
     data = request.get_json()
-    email, user_otp = data.get('email'), str(data.get('otp')).strip()
+    email = data.get('email','').lower().strip()
+    user_otp = str(data.get('otp')).strip()
     name, phone, password = data.get('name'), data.get('phone'), data.get('password')
     conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT otp_code, expires_at FROM otps WHERE email=%s", (email,))
+    cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (email,))
     row = cur.fetchone()
     if not row: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP not sent"}), 400
     db_otp, expiry = row
@@ -93,9 +94,9 @@ def verify_otp():
             hashed = generate_password_hash(password)
             cur.execute("INSERT INTO users (name, phone, email, password) VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO UPDATE SET name=%s, phone=%s, password=%s", (name, phone, email, hashed, name, phone, hashed))
             conn.commit()
-            cur.execute("SELECT id, name, phone, email FROM users WHERE email=%s", (email,))
+            cur.execute("SELECT id, name, phone, email FROM users WHERE LOWER(email)=%s", (email,))
             u = cur.fetchone()
-            cur.execute("DELETE FROM otps WHERE email=%s", (email,))
+            cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (email,))
             conn.commit(); cur.close(); conn.close()
             return jsonify({"success": True, "user": {"id": u[0], "name": u[1], "phone": u[2], "email": u[3]}})
         cur.close(); conn.close(); return jsonify({"success": True})
@@ -269,19 +270,22 @@ def orders_add(): return place_order()
 @app.route('/orders/create', methods=['POST'])
 def orders_create(): return place_order()
 
+# --- YAHAN FIX KIYA HAI - AB EMAIL SE SEARCH KAREGA ---
 @app.route('/address/get', methods=['GET'])
 def address_get():
     try:
         user_id = request.args.get('user_id')
-        email = request.args.get('email','').lower()
+        email = request.args.get('email','').lower().strip()
         conn=get_db(); cur=conn.cursor(cursor_factory=RealDictCursor)
-        if user_id:
+
+        if email:
+            # FIX: LOWER(email) se purane addresses bhi mil jayenge chahe user_id alag ho
+            cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
+        elif user_id:
             try:
                 cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (int(user_id),))
             except:
-                cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
-        elif email:
-            cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
+                cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE user_id::text=%s ORDER BY id DESC", (str(user_id),))
         else:
             cur.close(); conn.close()
             return jsonify([])
@@ -296,11 +300,11 @@ def address_add():
     try:
         d=request.get_json() or {}
         user_id = d.get('user_id')
-        email=(d.get('email') or '').lower()
+        email=(d.get('email') or '').lower().strip()
         try: uid_int=int(user_id) if user_id else None
         except: uid_int=None
         conn=get_db(); cur=conn.cursor()
-        cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address, city, state, locality) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality')))
+        cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address, city, state, locality) VALUES (%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality')))
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success": True})
     except Exception as e:
@@ -318,7 +322,7 @@ def address_delete():
 @app.route('/admin')
 def admin_panel():
     if not is_admin_allowed():
-        return "<h2>403 - Unauthorized</h2><p>Link me?key=REKAVO_KEY lagao. Render ENV me ADMIN_KEY set karo.</p>", 403
+        return "<h2>403 - Unauthorized</h2><p>Link me?key=REKAVO_KEY lagao.</p>", 403
     try:
         q = request.args.get('q','').strip().lower()
         conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -328,7 +332,7 @@ def admin_panel():
             FROM users u
             LEFT JOIN LATERAL (
                 SELECT full_address, city, state, pincode FROM user_addresses
-                WHERE user_id = u.id ORDER BY id DESC LIMIT 1
+                WHERE LOWER(email)=LOWER(u.email) ORDER BY id DESC LIMIT 1
             ) a ON true
             ORDER BY u.id DESC
         """)
@@ -337,7 +341,7 @@ def admin_panel():
             rows = [r for r in rows if q in str(r['name']).lower() or q in str(r['email']).lower() or q in str(r['phone']).lower()]
         html_rows = ""
         for r in rows:
-            city_state = f"{r['city'] or ''} {r['state'] or ''} {r['pincode'] or ''}".strip() or "<span style='color:#ff4d4d'>INCOMPLETE</span>"
+            city_state = f"{r['city'] or ''} {r['state'] or ''} {r['pincode'] or ''}".strip() or "<span style='color:#ff4d4d'>NO ADDR</span>"
             html_rows += f"""
             <tr>
                 <td>#{r['id']}</td>
@@ -355,12 +359,12 @@ def admin_panel():
         <title>REKAVO Admin</title>
         <style>
         body{{font-family:Inter,system-ui,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}
-      .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
-      .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
-      .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
+     .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
+     .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
+     .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
         table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px}}
         tr:hover{{background:#151518}}.mono{{font-family:monospace}}.blur{{filter:blur(0px);color:#888}}.blur:hover{{filter:none;color:#fff}}
-      .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
+     .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
         </style></head>
         <body>
         <div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>Secured • {len(rows)} Users</small></div><div><span class='badge'>● LIVE Neon</span></div></div>
@@ -379,6 +383,14 @@ def admin_panel():
 @app.route('/admin-users')
 def admin_users_old():
     return admin_panel()
+
+@app.route('/debug-addrs')
+def debug_addrs():
+    if not is_admin_allowed(): return "Unauthorized", 403
+    conn=get_db(); cur=conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM user_addresses ORDER BY id DESC LIMIT 50")
+    rows=cur.fetchall(); cur.close(); conn.close()
+    return jsonify(rows)
 
 @app.route('/')
 def home(): return "REKAVO Fixed - Neon DB - Admin Ready"
