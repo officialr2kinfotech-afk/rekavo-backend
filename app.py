@@ -270,16 +270,13 @@ def orders_add(): return place_order()
 @app.route('/orders/create', methods=['POST'])
 def orders_create(): return place_order()
 
-# --- YAHAN FIX KIYA HAI - AB EMAIL SE SEARCH KAREGA ---
 @app.route('/address/get', methods=['GET'])
 def address_get():
     try:
         user_id = request.args.get('user_id')
         email = request.args.get('email','').lower().strip()
         conn=get_db(); cur=conn.cursor(cursor_factory=RealDictCursor)
-
         if email:
-            # FIX: LOWER(email) se purane addresses bhi mil jayenge chahe user_id alag ho
             cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
         elif user_id:
             try:
@@ -304,7 +301,8 @@ def address_add():
         try: uid_int=int(user_id) if user_id else None
         except: uid_int=None
         conn=get_db(); cur=conn.cursor()
-        cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address, city, state, locality) VALUES (%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality')))
+        # FIXED: 9 columns = 9 %s = 9 values
+        cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address, city, state, locality) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality')))
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success": True})
     except Exception as e:
@@ -359,12 +357,12 @@ def admin_panel():
         <title>REKAVO Admin</title>
         <style>
         body{{font-family:Inter,system-ui,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}
-     .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
-     .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
-     .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
+       .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
+       .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
+       .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
         table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px}}
         tr:hover{{background:#151518}}.mono{{font-family:monospace}}.blur{{filter:blur(0px);color:#888}}.blur:hover{{filter:none;color:#fff}}
-     .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
+       .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
         </style></head>
         <body>
         <div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>Secured • {len(rows)} Users</small></div><div><span class='badge'>● LIVE Neon</span></div></div>
