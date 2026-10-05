@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os, random
+import os, random, jwt
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import resend
@@ -12,22 +12,20 @@ CORS(app)
 
 resend.api_key = os.environ.get('RESEND_API_KEY')
 DATABASE_URL = os.environ.get('DATABASE_URL')
-# ADMIN security - Render ke Environment me ye daal dena
-ADMIN_KEY = os.environ.get('ADMIN_KEY', 'rekavo@123') # isko change kar lena
-ADMIN_EMAILS = os.environ.get('ADMIN_EMAILS', '').lower().split(',') # vishnu@rekavo.com,lakhan@...
+JWT_SECRET = os.environ.get('JWT_SECRET', 'rekavo-secret-key')
+ADMIN_KEY = os.environ.get('ADMIN_KEY', 'rekavo@123')
+ADMIN_EMAILS = os.environ.get('ADMIN_EMAILS', '').lower().split(',')
 
 def get_db():
     return psycopg2.connect(DATABASE_URL)
 
 def is_admin_allowed():
-    # 3 tarike se security:?key= ya Header ya?admin_email=
     key = request.args.get('key') or request.args.get('admin_key') or request.headers.get('X-Admin-Key')
     admin_email = (request.args.get('admin_email') or '').lower()
     if key and key == ADMIN_KEY:
         return True
     if admin_email and admin_email in ADMIN_EMAILS:
         return True
-    # agar ADMIN_EMAILS set nahi hai to key se hi khulega
     if not ADMIN_EMAILS or ADMIN_EMAILS == ['']:
         return key == ADMIN_KEY
     return False
@@ -36,13 +34,13 @@ def mask_mobile(phone):
     if not phone: return "-"
     phone = str(phone).strip()
     if len(phone) < 6: return phone
-    return phone[:2] + "XXXX" + phone[-2:] # 91XXXX90
+    return phone[:2] + "XXXX" + phone[-2:]
 
 def mask_password(p):
     if not p: return "-"
     if p.startswith('scrypt:') or p.startswith('pbkdf2:'):
-        return p[:22] + "••••••••••••" # hash jaisa
-    return "●●●●●●HASHED●●●●●●" # purane plain wale ke liye
+        return p[:22] + "••••••••••••"
+    return "●●●●●●HASHED●●●●●●"
 
 @app.route('/create-table')
 def create_table():
@@ -55,7 +53,6 @@ def create_table():
     cur.execute("CREATE TABLE IF NOT EXISTS wishlists (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), product_id VARCHAR(255), name TEXT, price INTEGER, image TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_addresses (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), full_name VARCHAR(255), phone VARCHAR(20), pincode VARCHAR(20), full_address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_orders (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), order_id VARCHAR(100), product_name TEXT, amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-    # NEW FIX - tera city/state wala bug yahi se aa raha tha, column hi nahi tha
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS state VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS locality VARCHAR(255);")
@@ -65,8 +62,6 @@ def create_table():
     cur.execute("ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     conn.commit(); cur.close(); conn.close()
     return "REKAVO FIXED - Neon DB Ready with city/state + Hashing"
-
-# --- OTP, LOGIN, VERIFY (HASHING ADDED) ---
 
 @app.route('/send-otp', methods=['POST'])
 def send_otp():
@@ -96,7 +91,7 @@ def verify_otp():
     if datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP expired"}), 400
     if str(db_otp).strip() == user_otp:
         if name and password:
-            hashed = generate_password_hash(password) # YAHI FIX HAI
+            hashed = generate_password_hash(password)
             cur.execute("INSERT INTO users (name, phone, email, password) VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO UPDATE SET name=%s, phone=%s, password=%s", (name, phone, email, hashed, name, phone, hashed))
             conn.commit()
             cur.execute("SELECT id, name, phone, email FROM users WHERE email=%s", (email,))
@@ -118,19 +113,16 @@ def login():
     row = cur.fetchone(); cur.close(); conn.close()
     if not row: return jsonify({"success": False, "error": "User not found"}), 404
     db_pass = row[4]
-    # purana plain aur naya hash dono check
     is_ok = False
     try:
         if db_pass.startswith('scrypt:') or db_pass.startswith('pbkdf2:'):
             is_ok = check_password_hash(db_pass, password)
         else:
-            is_ok = (db_pass == password) # purane 5 users ke liye
+            is_ok = (db_pass == password)
     except: is_ok = (db_pass == password)
-
     if not is_ok: return jsonify({"success": False, "error": "Wrong password"}), 400
     return jsonify({"success": True, "user": {"id": row[0], "name": row[1], "phone": row[2], "email": row[3]}})
 
-# --- TERI BAKI CART / WISHLIST / ORDER ROUTES WAISI HI RAHENGI (yahan short me likh raha hu, purani wali copy kar lena) ---
 @app.route('/cart/get', methods=['GET'])
 def cart_get():
     user_id = request.args.get('user_id'); email = request.args.get('email','').lower()
@@ -278,33 +270,85 @@ def orders_add(): return place_order()
 @app.route('/orders/create', methods=['POST'])
 def orders_create(): return place_order()
 
+# ========== FIXED ADDRESS ROUTES - YAHI TERA BUG THA ==========
 @app.route('/address/get', methods=['GET'])
+@app.route('/api/addresses', methods=['GET'])
 def address_get():
-    user_id = request.args.get('user_id'); email=request.args.get('email','').lower(); conn=get_db(); cur=conn.cursor()
-    if user_id:
-        try: cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (int(user_id),))
-        except: cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (user_id,))
-    else: cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
-    rows=cur.fetchall(); cur.close(); conn.close()
-    return jsonify([{"id": r[0], "full_name": r[1], "phone": r[2], "pincode": r[3], "full_address": r[4], "city": r[5], "state": r[6]} for r in rows])
+    try:
+        user_id = request.args.get('user_id')
+        email = request.args.get('email','').lower()
+        auth = request.headers.get('Authorization','')
+        if auth.startswith('Bearer '):
+            try:
+                payload = jwt.decode(auth.replace('Bearer ','').strip(), JWT_SECRET, algorithms=["HS256"])
+                user_id = payload.get('user_id') or payload.get('id') or user_id
+                email = (payload.get('email') or email).lower()
+            except:
+                pass
+
+        conn=get_db(); cur=conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_addresses (
+                id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255),
+                full_name VARCHAR(255), phone VARCHAR(20), pincode VARCHAR(20),
+                full_address TEXT, city VARCHAR(100), state VARCHAR(100),
+                locality VARCHAR(255), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        conn.commit()
+
+        if user_id:
+            try:
+                cur.execute("SELECT * FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (int(user_id),))
+            except:
+                cur.execute("SELECT * FROM user_addresses WHERE user_id::text=%s OR LOWER(email)=%s ORDER BY id DESC", (str(user_id), email))
+        elif email:
+            cur.execute("SELECT * FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
+        else:
+            cur.close(); conn.close()
+            return jsonify([])
+
+        rows=cur.fetchall(); cur.close(); conn.close()
+        return jsonify(rows)
+    except Exception as e:
+        print("ADDRESS GET ERROR:", e)
+        return jsonify([])
 
 @app.route('/address/add', methods=['POST'])
 def address_add():
-    d=request.get_json(); user_id = d.get('user_id'); email=(d.get('email') or '').lower(); conn=get_db(); cur=conn.cursor()
-    try: uid_int=int(user_id) if user_id else None
-    except: uid_int=user_id
-    cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address, city, state) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state')))
-    conn.commit(); cur.close(); conn.close(); return jsonify({"success": True})
+    try:
+        d=request.get_json() or {}
+        user_id = d.get('user_id'); email=(d.get('email') or '').lower()
+        auth = request.headers.get('Authorization','')
+        if auth.startswith('Bearer '):
+            try:
+                payload = jwt.decode(auth.replace('Bearer ','').strip(), JWT_SECRET, algorithms=["HS256"])
+                user_id = payload.get('user_id') or payload.get('id') or user_id
+                email = (payload.get('email') or email).lower()
+            except:
+                pass
+        try: uid_int=int(user_id) if user_id else None
+        except: uid_int=None
+        conn=get_db(); cur=conn.cursor()
+        cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address, city, state, locality) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality')))
+        conn.commit(); cur.close(); conn.close(); return jsonify({"success": True})
+    except Exception as e:
+        print("ADDRESS ADD ERROR:", e)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/address/delete', methods=['POST'])
 def address_delete():
-    d=request.get_json(); conn=get_db(); cur=conn.cursor(); cur.execute("DELETE FROM user_addresses WHERE id=%s", (d.get('id'),)); conn.commit(); cur.close(); conn.close(); return jsonify({"success": True})
+    try:
+        d=request.get_json(); conn=get_db(); cur=conn.cursor(); cur.execute("DELETE FROM user_addresses WHERE id=%s", (d.get('id'),)); conn.commit(); cur.close(); conn.close(); return jsonify({"success": True})
+    except Exception as e:
+        print("ADDRESS DELETE ERROR:", e)
+        return jsonify({"success": False, "error": str(e)}), 500
 
-# ========== NAYA PROFESSIONAL ADMIN (SECURED) ==========
+# ========== ADMIN ==========
 @app.route('/admin')
 def admin_panel():
     if not is_admin_allowed():
-        return "<h2>403 - Unauthorized</h2><p>Link me?key=REKAVO_KEY lagao. Render ENV me ADMIN_KEY set karo.</p>", 403
+        return "<h2>403 - Unauthorized</h2><p>Link me?key=ADMIN_KEY lagao.</p>", 403
     try:
         q = request.args.get('q','').strip().lower()
         conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -319,66 +363,30 @@ def admin_panel():
             ORDER BY u.id DESC
         """)
         rows = cur.fetchall(); cur.close(); conn.close()
-
         if q:
             rows = [r for r in rows if q in str(r['name']).lower() or q in str(r['email']).lower() or q in str(r['phone']).lower()]
-
         html_rows = ""
         for r in rows:
             city_state = f"{r['city'] or ''} {r['state'] or ''} {r['pincode'] or ''}".strip() or "<span style='color:#ff4d4d'>INCOMPLETE</span>"
-            html_rows += f"""
-            <tr>
-                <td>#{r['id']}</td>
-                <td><b>{r['name'] or '-'}</b></td>
-                <td>{r['email'] or '-'}</td>
-                <td class='mono'>{mask_mobile(r['phone'])}</td>
-                <td class='mono blur'>{mask_password(r['password'])}</td>
-                <td style='max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>{r['full_address'] or '-'}</td>
-                <td>{city_state}</td>
-                <td>{r['created_at'].strftime('%d %b %y') if r['created_at'] else ''}</td>
-            </tr>
-            """
-
+            html_rows += f"<tr><td>#{r['id']}</td><td><b>{r['name'] or '-'}</b></td><td>{r['email'] or '-'}</td><td class='mono'>{mask_mobile(r['phone'])}</td><td class='mono blur'>{mask_password(r['password'])}</td><td style='max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'>{r['full_address'] or '-'}</td><td>{city_state}</td><td>{r['created_at'].strftime('%d %b %y') if r['created_at'] else ''}</td></tr>"
         return f"""
-        <html><head><meta name='viewport' content='width=device-width, initial-scale=1'>
-        <title>REKAVO Admin</title>
-        <style>
-        body{{font-family:Inter,system-ui,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}
-       .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
-       .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
-       .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
-        table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px}}
-        tr:hover{{background:#151518}}.mono{{font-family:monospace}}.blur{{filter:blur(0px);color:#888}}.blur:hover{{filter:none;color:#fff}}
-       .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
-        </style></head>
-        <body>
-        <div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>Secured • {len(rows)} Users</small></div><div><span class='badge'>● LIVE Neon</span></div></div>
-        <div class='card' style='padding:14px;display:flex;justify-content:space-between;align-items:center'>
-            <form><input class='search' name='q' value='{q}' placeholder='Search name, email, mobile...' /> <input type='hidden' name='key' value='{request.args.get("key","")}' /> <button style='background:#fff;color:#000;padding:10px 14px;border-radius:10px;border:none;margin-left:6px'>Search</button></form>
-            <div style='color:#666;font-size:12px'>Mobile: 91XXXX90 • Pass: HASHED</div>
-        </div>
-        <div class='card' style='overflow-x:auto'><table><tr><th>ID</th><th>User</th><th>Email</th><th>Mobile</th><th>Password (Hash)</th><th>Address</th><th>City / State</th><th>Date</th></tr>
-        {html_rows or '<tr><td colspan=8 style=text-align:center;padding:40px;color:#666>No users found</td></tr>'}
-        </table></div>
-        <p style='color:#555;font-size:11px;margin-top:12px'>* Passwords are hashed with werkzeug. Old plain passwords still work but show as HASHED. Mobile masked for privacy. Access via?key=ADMIN_KEY</p>
-        </body></html>
+        <html><head><meta name='viewport' content='width=device-width, initial-scale=1'><title>REKAVO Admin</title>
+        <style>body{{font-family:Inter,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}.top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}.card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}.search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase}}.mono{{font-family:monospace}}.badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}</style></head>
+        <body><div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>{len(rows)} Users</small></div><div><span class='badge'>● LIVE</span></div></div>
+        <div class='card' style='padding:14px;display:flex;justify-content:space-between'><form><input class='search' name='q' value='{q}' placeholder='Search...' /> <input type='hidden' name='key' value='{request.args.get("key","")}' /> <button style='background:#fff;color:#000;padding:10px 14px;border-radius:10px;border:none;margin-left:6px'>Search</button></form></div>
+        <div class='card' style='overflow-x:auto'><table><tr><th>ID</th><th>User</th><th>Email</th><th>Mobile</th><th>Password</th><th>Address</th><th>City/State</th><th>Date</th></tr>{html_rows}</table></div></body></html>
         """
     except Exception as e:
         return f"Admin Error: {str(e)}", 500
 
 @app.route('/admin-users')
-def admin_users_old():
-    # purana wala redirect
-    return admin_panel()
-
+def admin_users_old(): return admin_panel()
 @app.route('/')
 def home(): return "REKAVO Fixed - Neon DB - Admin Ready"
-
 @app.route('/delete-user/<int:user_id>')
 def delete_user(user_id):
     if not is_admin_allowed(): return "Unauthorized", 403
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("DELETE FROM users WHERE id=%s", (user_id,)); conn.commit(); cur.close(); conn.close()
+    conn = get_db(); cur = conn.cursor(); cur.execute("DELETE FROM users WHERE id=%s", (user_id,)); conn.commit(); cur.close(); conn.close()
     return f"User #{user_id} Deleted. <a href='/admin?key={ADMIN_KEY}'>Back</a>"
 
 if __name__ == '__main__': app.run()
