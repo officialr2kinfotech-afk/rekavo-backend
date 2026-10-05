@@ -52,15 +52,22 @@ def create_table():
     cur.execute("CREATE TABLE IF NOT EXISTS wishlists (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), product_id VARCHAR(255), name TEXT, price INTEGER, image TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_addresses (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), full_name VARCHAR(255), phone VARCHAR(20), pincode VARCHAR(20), full_address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_orders (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), order_id VARCHAR(100), product_name TEXT, amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
+    # OLD COLUMNS
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS state VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS locality VARCHAR(255);")
+    # NEW COLUMNS - YE TERE ME MISSING THE
+    cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS alt_phone VARCHAR(20);")
+    cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS line1 VARCHAR(255);")
+    cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS line2 VARCHAR(255);")
+    cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS landmark VARCHAR(255);")
+    cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS type VARCHAR(20) DEFAULT 'Home';")
     cur.execute("ALTER TABLE carts ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     cur.execute("ALTER TABLE wishlists ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     cur.execute("ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     conn.commit(); cur.close(); conn.close()
-    return "REKAVO FIXED - Neon DB Ready with city/state + Hashing"
+    return "REKAVO FIXED - Neon DB Ready with city/state + landmark + update API"
 
 @app.route('/send-otp', methods=['POST'])
 def send_otp():
@@ -277,12 +284,12 @@ def address_get():
         email = request.args.get('email','').lower().strip()
         conn=get_db(); cur=conn.cursor(cursor_factory=RealDictCursor)
         if email:
-            cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
+            cur.execute("SELECT id, user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type FROM user_addresses WHERE LOWER(email)=%s ORDER BY id DESC", (email,))
         elif user_id:
             try:
-                cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (int(user_id),))
+                cur.execute("SELECT id, user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type FROM user_addresses WHERE user_id=%s ORDER BY id DESC", (int(user_id),))
             except:
-                cur.execute("SELECT id, full_name, phone, pincode, full_address, city, state, locality FROM user_addresses WHERE user_id::text=%s ORDER BY id DESC", (str(user_id),))
+                cur.execute("SELECT id, user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type FROM user_addresses WHERE user_id::text=%s ORDER BY id DESC", (str(user_id),))
         else:
             cur.close(); conn.close()
             return jsonify([])
@@ -301,18 +308,40 @@ def address_add():
         try: uid_int=int(user_id) if user_id else None
         except: uid_int=None
         conn=get_db(); cur=conn.cursor()
-        # FIXED: 9 columns = 9 %s = 9 values
-        cur.execute("INSERT INTO user_addresses (user_id, email, full_name, phone, pincode, full_address, city, state, locality) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (uid_int, email, d.get('full_name'), d.get('phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality')))
+        cur.execute("""
+            INSERT INTO user_addresses (user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type)
+            VALUES (%s,%s,%s,%s,%s,%s)
+        """, (uid_int, email, d.get('full_name'), d.get('phone'), d.get('alt_phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality'), d.get('line1'), d.get('line2'), d.get('landmark'), d.get('type','Home')))
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success": True})
     except Exception as e:
         print("ADDRESS ADD ERROR:", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/address/update', methods=['POST'])
+def address_update():
+    try:
+        d=request.get_json() or {}
+        addr_id = d.get('id') or d.get('address_id')
+        if not addr_id:
+            return jsonify({"success": False, "error": "id missing"}), 400
+        conn=get_db(); cur=conn.cursor()
+        cur.execute("""
+            UPDATE user_addresses SET
+                full_name=%s, phone=%s, alt_phone=%s, pincode=%s, full_address=%s,
+                city=%s, state=%s, locality=%s, line1=%s, line2=%s, landmark=%s, type=%s
+            WHERE id=%s
+        """, (d.get('full_name'), d.get('phone'), d.get('alt_phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality'), d.get('line1'), d.get('line2'), d.get('landmark'), d.get('type','Home'), addr_id))
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"success": True, "message": "Address updated"})
+    except Exception as e:
+        print("ADDRESS UPDATE ERROR:", e)
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/address/delete', methods=['POST'])
 def address_delete():
     try:
-        d=request.get_json(); conn=get_db(); cur=conn.cursor(); cur.execute("DELETE FROM user_addresses WHERE id=%s", (d.get('id'),)); conn.commit(); cur.close(); conn.close(); return jsonify({"success": True})
+        d=request.get_json(); conn=get_db(); cur=conn.cursor(); cur.execute("DELETE FROM user_addresses WHERE id=%s", (d.get('id') or d.get('address_id'),)); conn.commit(); cur.close(); conn.close(); return jsonify({"success": True})
     except Exception as e:
         print("DELETE ERR:", e)
         return jsonify({"success": False}), 500
@@ -357,12 +386,12 @@ def admin_panel():
         <title>REKAVO Admin</title>
         <style>
         body{{font-family:Inter,system-ui,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}
-       .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
-       .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
-       .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
+      .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
+      .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
+      .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
         table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px}}
         tr:hover{{background:#151518}}.mono{{font-family:monospace}}.blur{{filter:blur(0px);color:#888}}.blur:hover{{filter:none;color:#fff}}
-       .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
+      .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
         </style></head>
         <body>
         <div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>Secured • {len(rows)} Users</small></div><div><span class='badge'>● LIVE Neon</span></div></div>
