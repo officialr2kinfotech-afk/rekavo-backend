@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 import os, random
 import psycopg2
@@ -9,7 +9,28 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 CORS(app)
+app.secret_key = 'rekavo_secret_123'
 
+TRANSLATIONS = {
+    'English': {'home':'Home','cart':'Cart'},
+    'Hindi': {'home':'होम','cart':'कार्ट'},
+    'Marathi': {'home':'होम','cart':'कार्ट'},
+    'Telugu': {'home':'హోమ్','cart':'కార్ట్'},
+    'Tamil': {'home':'முகப்பு','cart':'கார்ட்'},
+    'Bengali': {'home':'হোম','cart':'কার্ট'},
+}
+
+@app.context_processor
+def inject_lang():
+    lang = session.get('rekavo_lang', 'English')
+    def t(key):
+        return TRANSLATIONS.get(lang, TRANSLATIONS['English']).get(key, key)
+    return dict(t=t)
+
+@app.route('/set-lang/<lang_code>')
+def set_lang_route(lang_code):
+    session['rekavo_lang'] = lang_code
+    return '', 204
 resend.api_key = os.environ.get('RESEND_API_KEY')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 ADMIN_KEY = os.environ.get('ADMIN_KEY', 'rekavo@123')
