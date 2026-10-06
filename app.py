@@ -8,17 +8,8 @@ from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-@app.context_processor
-def inject_lang():
-    lang = session.get('rekavo_lang', 'English')
-    def t(key):
-        return TRANSLATIONS.get(lang, TRANSLATIONS['English']).get(key, key)
-    return dict(t=t)
+CORS(app)
 
-@app.route('/set-lang/<lang_code>')
-def set_lang_route(lang_code):
-    session['rekavo_lang'] = lang_code
-    return '', 204
 resend.api_key = os.environ.get('RESEND_API_KEY')
 DATABASE_URL = os.environ.get('DATABASE_URL')
 ADMIN_KEY = os.environ.get('ADMIN_KEY', 'rekavo@123')
@@ -319,7 +310,7 @@ def address_add():
         conn=get_db(); cur=conn.cursor()
         cur.execute("""
             INSERT INTO user_addresses (user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s)
         """, (uid_int, email, d.get('full_name'), d.get('phone'), d.get('alt_phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality'), d.get('line1'), d.get('line2'), d.get('landmark'), d.get('type','Home')))
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success": True})
