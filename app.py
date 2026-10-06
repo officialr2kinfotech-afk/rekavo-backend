@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os, random
 import psycopg2
@@ -8,18 +8,6 @@ from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-CORS(app)
-app.secret_key = 'rekavo_secret_123'
-
-TRANSLATIONS = {
-    'English': {'home':'Home','cart':'Cart'},
-    'Hindi': {'home':'होम','cart':'कार्ट'},
-    'Marathi': {'home':'होम','cart':'कार्ट'},
-    'Telugu': {'home':'హోమ్','cart':'కార్ట్'},
-    'Tamil': {'home':'முகப்பு','cart':'கார்ட்'},
-    'Bengali': {'home':'হোম','cart':'কার্ট'},
-}
-
 @app.context_processor
 def inject_lang():
     lang = session.get('rekavo_lang', 'English')
