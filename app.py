@@ -52,11 +52,9 @@ def create_table():
     cur.execute("CREATE TABLE IF NOT EXISTS wishlists (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), product_id VARCHAR(255), name TEXT, price INTEGER, image TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_addresses (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), full_name VARCHAR(255), phone VARCHAR(20), pincode VARCHAR(20), full_address TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
     cur.execute("CREATE TABLE IF NOT EXISTS user_orders (id SERIAL PRIMARY KEY, user_id INTEGER, email VARCHAR(255), order_id VARCHAR(100), product_name TEXT, amount INTEGER, status VARCHAR(50) DEFAULT 'Pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);")
-    # OLD COLUMNS
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS state VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS locality VARCHAR(255);")
-    # NEW COLUMNS - YE TERE ME MISSING THE
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS alt_phone VARCHAR(20);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS line1 VARCHAR(255);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS line2 VARCHAR(255);")
@@ -67,7 +65,7 @@ def create_table():
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     cur.execute("ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     conn.commit(); cur.close(); conn.close()
-    return "REKAVO FIXED - Neon DB Ready with city/state + landmark + update API"
+    return "REKAVO FIXED - Neon DB Ready with city/state + landmark + update API + PROFILE EDIT"
 
 @app.route('/send-otp', methods=['POST'])
 def send_otp():
@@ -130,6 +128,7 @@ def login():
     if not is_ok: return jsonify({"success": False, "error": "Wrong password"}), 400
     return jsonify({"success": True, "user": {"id": row[0], "name": row[1], "phone": row[2], "email": row[3]}})
 
+# ================= CART / WISHLIST / ORDERS SAME AS BEFORE =================
 @app.route('/cart/get', methods=['GET'])
 def cart_get():
     user_id = request.args.get('user_id'); email = request.args.get('email','').lower()
@@ -310,7 +309,7 @@ def address_add():
         conn=get_db(); cur=conn.cursor()
         cur.execute("""
             INSERT INTO user_addresses (user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s)
         """, (uid_int, email, d.get('full_name'), d.get('phone'), d.get('alt_phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality'), d.get('line1'), d.get('line2'), d.get('landmark'), d.get('type','Home')))
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success": True})
@@ -345,6 +344,80 @@ def address_delete():
     except Exception as e:
         print("DELETE ERR:", e)
         return jsonify({"success": False}), 500
+
+# ========= NEW PROFILE EDIT - NO NEW TABLE =========
+@app.route('/user/update-name', methods=['POST'])
+def update_name():
+    d = request.get_json() or {}
+    uid = d.get('user_id')
+    name = (d.get('name') or '').strip()
+    if not uid or not name: return jsonify({"success": False, "error":"name required"}), 400
+    try: uid_int = int(uid)
+    except: uid_int = uid
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("UPDATE users SET name=%s WHERE id=%s", (name, uid_int))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True})
+
+@app.route('/profile/request-change', methods=['POST'])
+def profile_request_change():
+    d = request.get_json() or {}
+    old_email = (d.get('old_email') or '').lower().strip()
+    new_email = (d.get('new_email') or '').lower().strip()
+    if not old_email or not new_email: return jsonify({"success": False, "error":"email required"}), 400
+    if old_email == new_email: return jsonify({"success": False, "error":"Same email"}), 400
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT id FROM users WHERE LOWER(email)=%s", (new_email,))
+    if cur.fetchone():
+        cur.close(); conn.close()
+        return jsonify({"success": False, "error":"Ye email already registered hai"}), 400
+    otp = str(random.randint(100000, 999999))
+    expiry = datetime.now() + timedelta(minutes=10)
+    cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s,%s,%s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (old_email, otp, expiry, otp, expiry))
+    conn.commit(); cur.close(); conn.close()
+    try:
+        resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": old_email,"subject": f"{otp} - Verify email change","html": f"<h1>{otp}</h1><p>Aap {old_email} se {new_email} par change kar rahe ho. OTP 10 min valid.</p>"})
+    except Exception as e: print(e)
+    return jsonify({"success": True})
+
+@app.route('/profile/verify-and-update', methods=['POST'])
+def profile_verify_and_update():
+    d = request.get_json() or {}
+    uid = d.get('user_id')
+    old_email = (d.get('old_email') or '').lower().strip()
+    new_email = (d.get('new_email') or '').lower().strip()
+    user_otp = str(d.get('otp') or '').strip()
+    if not uid or not old_email or not new_email or not user_otp:
+        return jsonify({"success": False, "error":"missing fields"}), 400
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (old_email,))
+    row = cur.fetchone()
+    if not row: cur.close(); conn.close(); return jsonify({"success": False, "error":"OTP not sent"}), 400
+    db_otp, expiry = row
+    if datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error":"OTP expired"}), 400
+    if str(db_otp).strip()!= user_otp: cur.close(); conn.close(); return jsonify({"success": False, "error":"Wrong OTP"}), 400
+    try: uid_int = int(uid)
+    except: uid_int = uid
+    cur.execute("UPDATE users SET email=%s WHERE id=%s", (new_email, uid_int))
+    cur.execute("UPDATE carts SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
+    cur.execute("UPDATE wishlists SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
+    cur.execute("UPDATE user_addresses SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
+    cur.execute("UPDATE user_orders SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
+    cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (old_email,))
+    conn.commit(); cur.close(); conn.close()
+    return jsonify({"success": True})
+
+@app.route('/user/update', methods=['POST'])
+def user_update_legacy():
+    d = request.get_json() or {}
+    uid = d.get('user_id'); name = d.get('name')
+    if uid and name:
+        try:
+            conn=get_db(); cur=conn.cursor()
+            cur.execute("UPDATE users SET name=%s WHERE id=%s", (name, int(uid) if str(uid).isdigit() else uid))
+            conn.commit(); cur.close(); conn.close()
+        except: pass
+    return jsonify({"success": True})
 
 @app.route('/admin')
 def admin_panel():
@@ -386,12 +459,12 @@ def admin_panel():
         <title>REKAVO Admin</title>
         <style>
         body{{font-family:Inter,system-ui,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}
-      .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
-      .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
-      .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
+     .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
+     .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
+     .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
         table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px}}
         tr:hover{{background:#151518}}.mono{{font-family:monospace}}.blur{{filter:blur(0px);color:#888}}.blur:hover{{filter:none;color:#fff}}
-      .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
+     .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
         </style></head>
         <body>
         <div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>Secured • {len(rows)} Users</small></div><div><span class='badge'>● LIVE Neon</span></div></div>
