@@ -390,41 +390,53 @@ def profile_verify_and_update():
     new_name = (d.get('name') or '').strip()
     user_otp = str(d.get('otp') or '').strip()
 
-    conn=get_db(); cur=conn.cursor()
+    if not uid or not user_otp:
+        return jsonify({"success": False, "error": "Missing fields"}), 400
+
+    conn = get_db()
+    cur = conn.cursor()
+
     cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (old_email,))
     row = cur.fetchone()
-    if not row: return jsonify({"success": False, "error":"OTP not sent"}), 400
-    if datetime.now() > row[1]: return jsonify({"success": False, "error":"OTP expired"}), 400
-    if str(row[0]).strip()!= user_otp: return jsonify({"success": False, "error":"Wrong OTP"}), 400
 
-    # check new email duplicate
+    if not row:
+        cur.close(); conn.close()
+        return jsonify({"success": False, "error": "OTP not sent"}), 400
+
+    db_otp, expiry = row # <-- clean, no row[0] row[1] ka chakkar
+
+    if datetime.now() > expiry:
+        cur.close(); conn.close()
+        return jsonify({"success": False, "error": "OTP expired"}), 400
+
+    if str(db_otp).strip()!= user_otp:
+        cur.close(); conn.close()
+        return jsonify({"success": False, "error": "Wrong OTP"}), 400
+
+    # duplicate email check
     if new_email!= old_email:
         cur.execute("SELECT id FROM users WHERE LOWER(email)=%s", (new_email,))
-        if cur.fetchone(): return jsonify({"success": False, "error":"Email already used"}), 400
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "Email already used"}), 400
 
     try: uid_int = int(uid)
     except: uid_int = uid
 
-    cur.execute("UPDATE users SET name=%s, phone=%s, email=%s WHERE id=%s", (new_name, new_phone, new_email, uid_int))
+    # final update - 1 query me sab
+    cur.execute("UPDATE users SET name=%s, phone=%s, email=%s WHERE id=%s",
+                (new_name, new_phone, new_email, uid_int))
     cur.execute("UPDATE carts SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
     cur.execute("UPDATE wishlists SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
     cur.execute("UPDATE user_addresses SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
     cur.execute("UPDATE user_orders SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
     cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (old_email,))
-    conn.commit(); cur.close(); conn.close()
-    return jsonify({"success": True})
 
-@app.route('/user/update', methods=['POST'])
-def user_update_legacy():
-    d = request.get_json() or {}
-    uid = d.get('user_id'); name = d.get('name')
-    if uid and name:
-        try:
-            conn=get_db(); cur=conn.cursor()
-            cur.execute("UPDATE users SET name=%s WHERE id=%s", (name, int(uid) if str(uid).isdigit() else uid))
-            conn.commit(); cur.close(); conn.close()
-        except: pass
-    return jsonify({"success": True})
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return jsonify({"success": True, "message": "Profile updated"})
 
 @app.route('/admin')
 def admin_panel():
