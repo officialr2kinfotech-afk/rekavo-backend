@@ -386,19 +386,26 @@ def profile_verify_and_update():
     uid = d.get('user_id')
     old_email = (d.get('old_email') or '').lower().strip()
     new_email = (d.get('new_email') or '').lower().strip()
+    new_phone = (d.get('new_phone') or '').strip()
+    new_name = (d.get('name') or '').strip()
     user_otp = str(d.get('otp') or '').strip()
-    if not uid or not old_email or not new_email or not user_otp:
-        return jsonify({"success": False, "error":"missing fields"}), 400
+
     conn=get_db(); cur=conn.cursor()
     cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (old_email,))
     row = cur.fetchone()
-    if not row: cur.close(); conn.close(); return jsonify({"success": False, "error":"OTP not sent"}), 400
-    db_otp, expiry = row
-    if datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error":"OTP expired"}), 400
-    if str(db_otp).strip()!= user_otp: cur.close(); conn.close(); return jsonify({"success": False, "error":"Wrong OTP"}), 400
+    if not row: return jsonify({"success": False, "error":"OTP not sent"}), 400
+    if datetime.now() > row[1]: return jsonify({"success": False, "error":"OTP expired"}), 400
+    if str(row[0]).strip()!= user_otp: return jsonify({"success": False, "error":"Wrong OTP"}), 400
+
+    # check new email duplicate
+    if new_email!= old_email:
+        cur.execute("SELECT id FROM users WHERE LOWER(email)=%s", (new_email,))
+        if cur.fetchone(): return jsonify({"success": False, "error":"Email already used"}), 400
+
     try: uid_int = int(uid)
     except: uid_int = uid
-    cur.execute("UPDATE users SET email=%s WHERE id=%s", (new_email, uid_int))
+
+    cur.execute("UPDATE users SET name=%s, phone=%s, email=%s WHERE id=%s", (new_name, new_phone, new_email, uid_int))
     cur.execute("UPDATE carts SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
     cur.execute("UPDATE wishlists SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
     cur.execute("UPDATE user_addresses SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
