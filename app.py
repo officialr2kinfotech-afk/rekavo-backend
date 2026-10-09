@@ -67,8 +67,10 @@ def create_table():
     conn.commit(); cur.close(); conn.close()
     return "REKAVO FIXED - Neon DB Ready"
 
-@app.route('/send-otp', methods=['POST'])
+@app.route('/send-otp', methods=['POST', 'OPTIONS'])
 def send_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     try:
         data = request.get_json() or {}
         email = data.get('email','').lower().strip()
@@ -86,8 +88,12 @@ def send_otp():
         print(f"SEND-OTP ERROR: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/verify-otp', methods=['POST'])
+# FIX 1: /check-otp added - yahi network error ki wajah tha
+@app.route('/check-otp', methods=['POST', 'OPTIONS'])
+@app.route('/verify-otp', methods=['POST', 'OPTIONS'])
 def verify_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     try:
         data = request.get_json() or {}
         email = data.get('email','').lower().strip()
@@ -333,9 +339,10 @@ def address_add():
         try: uid_int=int(user_id) if user_id else None
         except: uid_int=None
         conn=get_db(); cur=conn.cursor()
+        # FIX 2: 14 columns = 14 %s
         cur.execute("""
             INSERT INTO user_addresses (user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type)
-            VALUES (%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (uid_int, email, d.get('full_name'), d.get('phone'), d.get('alt_phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality'), d.get('line1'), d.get('line2'), d.get('landmark'), d.get('type','Home')))
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success": True})
@@ -490,12 +497,12 @@ def admin_panel():
         <title>REKAVO Admin</title>
         <style>
         body{{font-family:Inter,system-ui,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}
-    .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
-    .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
-    .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
+   .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
+   .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
+   .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
         table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px}}
         tr:hover{{background:#151518}}.mono{{font-family:monospace}}.blur{{filter:blur(0px);color:#888}}.blur:hover{{filter:none;color:#fff}}
-    .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
+   .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
         </style></head>
         <body>
         <div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>Secured • {len(rows)} Users</small></div><div><span class='badge'>● LIVE Neon</span></div></div>
