@@ -84,29 +84,53 @@ def send_otp():
 
 @app.route('/verify-otp', methods=['POST'])
 def verify_otp():
-    data = request.get_json()
-    email = data.get('email','').lower().strip()
-    user_otp = str(data.get('otp')).strip()
-    name, phone, password = data.get('name'), data.get('phone'), data.get('password')
-    conn = get_db(); cur = conn.cursor()
-    cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (email,))
-    row = cur.fetchone()
-    if not row: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP not sent"}), 400
-    db_otp, expiry = row
-    if datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP expired"}), 400
-    if str(db_otp).strip() == user_otp:
-        if name and password:
-            hashed = generate_password_hash(password)
-            cur.execute("INSERT INTO users (name, phone, email, password) VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO UPDATE SET name=%s, phone=%s, password=%s", (name, phone, email, hashed, name, phone, hashed))
-            conn.commit()
-            cur.execute("SELECT id, name, phone, email FROM users WHERE LOWER(email)=%s", (email,))
-            u = cur.fetchone()
-            cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (email,))
-            conn.commit(); cur.close(); conn.close()
-            return jsonify({"success": True, "user": {"id": u[0], "name": u[1], "phone": u[2], "email": u[3]}})
-        cur.close(); conn.close(); return jsonify({"success": True})
-    else: cur.close(); conn.close(); return jsonify({"success": False, "error": "Wrong OTP"}), 400
+    try:
+        data = request.get_json() or {}
+        email = data.get('email','').lower().strip()
+        user_otp = str(data.get('otp') or '').strip()
+        name, phone, password = data.get('name'), data.get('phone') or data.get('mobile'), data.get('password')
 
+        if not email or not user_otp:
+            return jsonify({"success": False, "error": "Email/OTP missing"}), 400
+
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (email,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "OTP not sent, resend karo"}), 400
+
+        db_otp, expiry = row
+
+        # FIX: Timezone error fix
+        if expiry:
+            if expiry.tzinfo is not None:
+                expiry = expiry.replace(tzinfo=None)
+
+        if datetime.now() > expiry:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "OTP expired, resend karo"}), 400
+
+        if str(db_otp).strip() == user_otp:
+            if name and password:
+                hashed = generate_password_hash(password)
+                cur.execute("INSERT INTO users (name, phone, email, password) VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO UPDATE SET name=%s, phone=%s, password=%s", (name, phone, email, hashed, name, phone, hashed))
+                conn.commit()
+                cur.execute("SELECT id, name, phone, email FROM users WHERE LOWER(email)=%s", (email,))
+                u = cur.fetchone()
+                cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (email,))
+                conn.commit()
+                cur.close(); conn.close()
+                return jsonify({"success": True, "user": {"id": u[0], "name": u[1], "phone": u[2], "email": u[3]}})
+            cur.close(); conn.close()
+            return jsonify({"success": True})
+        else:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "Wrong OTP"}), 400
+
+    except Exception as e:
+        print(f"VERIFY-OTP ERROR: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
 @app.route('/login', methods=['POST'])
 def login():
     data = request.get_json()
