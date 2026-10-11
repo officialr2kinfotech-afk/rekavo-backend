@@ -238,3 +238,55 @@ def profile_verify_and_update():
     cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (old_email,))
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True, "message": "Profile updated successfully"})
+
+@app.route('/products/add', methods=['POST'])
+def add_product():
+    try:
+        import json
+        from datetime import datetime
+        from database import get_db_connection
+        data = request.json
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO products
+            (dealer_id, title, brand, sku, category, sub_category, product_type, description, bullets, main_image, gallery, mrp, selling_price, gst, total_stock, variant_attributes, variants, specs, weight, status, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
+        """, (
+            data.get('dealer_id'), data.get('title'), data.get('brand'), data.get('sku'),
+            data.get('category'), data.get('sub_category'),
+            data.get('product_type'), data.get('description'),
+            json.dumps(data.get('bullets',[])),
+            data.get('main_image'),
+            json.dumps(data.get('gallery',[])),
+            data.get('mrp'), data.get('selling_price'), data.get('gst'),
+            data.get('total_stock',0),
+            json.dumps(data.get('variant_attributes',[])),
+            json.dumps(data.get('variants',[])),
+            json.dumps(data.get('specs',[])),
+            data.get('weight',0),
+            data.get('status','active'),
+            datetime.now()
+        ))
+        pid = cur.fetchone()[0]
+        conn.commit()
+        cur.close(); conn.close()
+        return jsonify({"message":"Product saved", "id": pid})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/products/get', methods=['GET'])
+def get_products():
+    try:
+        from database import get_db_connection
+        status = request.args.get('status','active')
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM products WHERE status=%s ORDER BY id DESC", (status,))
+        cols = [desc[0] for desc in cur.description]
+        products = [dict(zip(cols, row)) for row in cur.fetchall()]
+        cur.close(); conn.close()
+        return jsonify(products)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
