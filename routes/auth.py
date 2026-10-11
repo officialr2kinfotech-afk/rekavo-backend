@@ -41,7 +41,7 @@ def send_otp():
     try:
         data = request.get_json() or {}
         email = data.get('email','').lower().strip()
-        if not email: return jsonify({"success": False, "error": "Email required"}), 400
+        if not email: return jsonify({"success": False, "error": "Email is required"}), 400
         otp = str(random.randint(100000, 999999))
         expiry = datetime.now() + timedelta(minutes=10)
         conn = get_db(); cur = conn.cursor()
@@ -50,7 +50,7 @@ def send_otp():
         try:
             resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO OTP","html": f"<h1>{otp}</h1><p>Valid for 10 min.</p>"})
         except Exception as e: print(f"Resend error: {e}")
-        return jsonify({"success": True, "message": "OTP sent"})
+        return jsonify({"success": True, "message": "OTP has been sent to your email"})
     except Exception as e:
         print(f"SEND-OTP ERROR: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
@@ -66,13 +66,13 @@ def verify_otp():
         user_otp = str(data.get('otp') or '').strip()
         name, phone, password = data.get('name'), data.get('phone') or data.get('mobile'), data.get('password')
         if not email or not user_otp:
-            return jsonify({"success": False, "error": "Email/OTP missing"}), 400
+            return jsonify({"success": False, "error": "Email and OTP are required"}), 400
         conn = get_db(); cur = conn.cursor()
         cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (email,))
         row = cur.fetchone()
         if not row:
             cur.close(); conn.close()
-            return jsonify({"success": False, "error": "OTP not sent, resend karo"}), 400
+            return jsonify({"success": False, "error": "OTP not found. Please resend OTP."}), 400
         db_otp, expiry = row
         try:
             if expiry and expiry.tzinfo is not None:
@@ -80,7 +80,7 @@ def verify_otp():
         except: pass
         if expiry and datetime.now() > expiry:
             cur.close(); conn.close()
-            return jsonify({"success": False, "error": "OTP expired, resend karo"}), 400
+            return jsonify({"success": False, "error": "OTP has expired. Please resend OTP."}), 400
         if str(db_otp).strip() == user_otp:
             if name and password:
                 hashed = generate_password_hash(password)
@@ -97,26 +97,29 @@ def verify_otp():
                     print(f"Welcome mail failed but user created: {e}")
                 return jsonify({"success": True, "user": {"id": u[0], "name": u[1], "phone": u[2], "email": u[3]}})
             cur.close(); conn.close()
-            return jsonify({"success": True})
+            return jsonify({"success": True, "message": "OTP verified successfully"})
         else:
             cur.close(); conn.close()
-            return jsonify({"success": False, "error": "Wrong OTP"}), 400
+            return jsonify({"success": False, "error": "Invalid OTP. Please try again."}), 400
     except Exception as e:
         print(f"VERIFY-OTP ERROR: {e}")
         import traceback; traceback.print_exc()
         return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
 
-@app.route('/login', methods=['POST'])
+@app.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     try:
         data = request.get_json() or {}
-        login_text = data.get('email','').strip().lower()
+        login_text = data.get('email','').strip()
         password = data.get('password')
-        if not login_text or not password: return jsonify({"success": False, "error": "Email/Phone and password required"}), 400
+        if not login_text or not password: return jsonify({"success": False, "error": "Email/Phone and password are required"}), 400
         conn = get_db(); cur = conn.cursor()
-        cur.execute("SELECT id, name, phone, email, password FROM users WHERE LOWER(email)=%s OR phone=%s", (login_text, login_text))
+        # FIX: Login with new email OR new phone both will work
+        cur.execute("SELECT id, name, phone, email, password FROM users WHERE LOWER(TRIM(email))=%s OR TRIM(phone)=%s", (login_text.lower(), login_text))
         row = cur.fetchone(); cur.close(); conn.close()
-        if not row: return jsonify({"success": False, "error": "User not found"}), 404
+        if not row: return jsonify({"success": False, "error": "User not found. Please check your email or phone number."}), 404
         db_pass = row[4]
         is_ok = False
         try:
@@ -125,56 +128,76 @@ def login():
             else:
                 is_ok = (db_pass == password)
         except: is_ok = (db_pass == password)
-        if not is_ok: return jsonify({"success": False, "error": "Wrong password"}), 400
+        if not is_ok: return jsonify({"success": False, "error": "Incorrect password. Please try again."}), 400
         return jsonify({"success": True, "user": {"id": row[0], "name": row[1], "phone": row[2], "email": row[3]}})
     except Exception as e:
         print(f"LOGIN ERROR: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/user/update-name', methods=['POST'])
+@app.route('/user/update-name', methods=['POST', 'OPTIONS'])
 def update_name():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     d = request.get_json() or {}
     uid = d.get('user_id')
     name = (d.get('name') or '').strip()
-    if not uid or not name: return jsonify({"success": False, "error":"name required"}), 400
+    if not uid or not name: return jsonify({"success": False, "error":"Name is required"}), 400
     try: uid_int = int(uid)
     except: uid_int = uid
     conn=get_db(); cur=conn.cursor()
     cur.execute("UPDATE users SET name=%s WHERE id=%s", (name, uid_int))
     conn.commit(); cur.close(); conn.close()
-    return jsonify({"success": True})
+    return jsonify({"success": True, "message": "Name updated successfully"})
 
-@app.route('/profile/request-change', methods=['POST'])
+@app.route('/profile/request-change', methods=['POST', 'OPTIONS'])
 def profile_request_change():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     d = request.get_json() or {}
     old_email = (d.get('old_email') or '').lower().strip()
     new_email = (d.get('new_email') or '').lower().strip() or old_email
     new_phone = (d.get('new_phone') or '').strip()
     user_id = d.get('user_id')
-    if not old_email: return jsonify({"success": False, "error":"email required"}), 400
+    if not old_email: return jsonify({"success": False, "error":"Current email is required"}), 400
     conn=get_db(); cur=conn.cursor()
-    cur.execute("SELECT phone FROM users WHERE id=%s OR LOWER(email)=%s LIMIT 1", (user_id, old_email))
+    try: uid_int = int(user_id)
+    except: uid_int = user_id
+
+    cur.execute("SELECT phone FROM users WHERE id=%s OR LOWER(email)=%s LIMIT 1", (uid_int, old_email))
     urow = cur.fetchone()
     old_phone = str(urow[0] if urow else '').strip() if urow else ''
+
     if old_email == new_email and old_phone == new_phone:
         cur.close(); conn.close()
-        return jsonify({"success": False, "error":"No changes"}), 400
+        return jsonify({"success": False, "error":"No changes detected"}), 400
+
+    # CHECK: Email already exists
     if new_email!= old_email:
-        cur.execute("SELECT id FROM users WHERE LOWER(email)=%s", (new_email,))
+        cur.execute("SELECT id FROM users WHERE LOWER(email)=%s AND id!= %s", (new_email, uid_int))
         if cur.fetchone():
             cur.close(); conn.close()
-            return jsonify({"success": False, "error":"Ye email already registered hai"}), 400
+            return jsonify({"success": False, "error":"This email is already registered. Please use a different email."}), 400
+
+    # CHECK: Phone already exists - NEW ADDED
+    if new_phone and new_phone!= old_phone:
+        cur.execute("SELECT id FROM users WHERE TRIM(phone)=%s AND id!= %s", (new_phone, uid_int))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error":"This phone number is already registered. Please use a different phone number."}), 400
+
     otp = str(random.randint(100000, 999999))
     expiry = datetime.now() + timedelta(minutes=10)
     cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s,%s,%s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (old_email, otp, expiry, otp, expiry))
     conn.commit(); cur.close(); conn.close()
     try:
-        resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": old_email,"subject": f"{otp} - Verify profile change","html": f"<h1>{otp}</h1><p>New Email: {new_email}<br>New Phone: {new_phone}<br>OTP 10 min valid.</p>"})
+        resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": old_email,"subject": f"{otp} - Verify profile change","html": f"<h1>{otp}</h1><p>New Email: {new_email}<br>New Phone: {new_phone}<br>OTP is valid for 10 minutes.</p>"})
     except Exception as e: print(e)
-    return jsonify({"success": True})
+    return jsonify({"success": True, "message": "OTP has been sent to your current email for verification."})
 
-@app.route('/profile/verify-and-update', methods=['POST'])
+@app.route('/profile/verify-and-update', methods=['POST', 'OPTIONS'])
 def profile_verify_and_update():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     d = request.get_json() or {}
     uid = d.get('user_id')
     old_email = (d.get('old_email') or '').lower().strip()
@@ -182,23 +205,30 @@ def profile_verify_and_update():
     new_phone = (d.get('new_phone') or '').strip()
     new_name = (d.get('name') or '').strip()
     user_otp = str(d.get('otp') or '').strip()
-    if not uid or not user_otp: return jsonify({"success": False, "error": "Missing fields"}), 400
+    if not uid or not user_otp: return jsonify({"success": False, "error": "OTP is required"}), 400
     conn = get_db(); cur = conn.cursor()
+    try: uid_int = int(uid)
+    except: uid_int = uid
+
     cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (old_email,))
     row = cur.fetchone()
-    if not row: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP not sent"}), 400
+    if not row: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP not found. Please request a new OTP."}), 400
     db_otp, expiry = row
     try:
         if expiry and expiry.tzinfo is not None:
             expiry = expiry.replace(tzinfo=None)
     except: pass
-    if expiry and datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP expired"}), 400
-    if str(db_otp).strip()!= user_otp: cur.close(); conn.close(); return jsonify({"success": False, "error": "Wrong OTP"}), 400
+    if expiry and datetime.now() > expiry: cur.close(); conn.close(); return jsonify({"success": False, "error": "OTP has expired. Please request a new OTP."}), 400
+    if str(db_otp).strip()!= user_otp: cur.close(); conn.close(); return jsonify({"success": False, "error": "Invalid OTP. Please try again."}), 400
+
     if new_email!= old_email:
-        cur.execute("SELECT id FROM users WHERE LOWER(email)=%s", (new_email,))
-        if cur.fetchone(): cur.close(); conn.close(); return jsonify({"success": False, "error": "Email already used"}), 400
-    try: uid_int = int(uid)
-    except: uid_int = uid
+        cur.execute("SELECT id FROM users WHERE LOWER(email)=%s AND id!= %s", (new_email, uid_int))
+        if cur.fetchone(): cur.close(); conn.close(); return jsonify({"success": False, "error": "This email is already registered."}), 400
+
+    if new_phone:
+        cur.execute("SELECT id FROM users WHERE TRIM(phone)=%s AND id!= %s", (new_phone, uid_int))
+        if cur.fetchone(): cur.close(); conn.close(); return jsonify({"success": False, "error": "This phone number is already registered."}), 400
+
     cur.execute("UPDATE users SET name=%s, phone=%s, email=%s WHERE id=%s", (new_name, new_phone, new_email, uid_int))
     if new_email!= old_email:
         cur.execute("UPDATE carts SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
@@ -207,4 +237,4 @@ def profile_verify_and_update():
         cur.execute("UPDATE user_orders SET email=%s WHERE LOWER(email)=%s", (new_email, old_email))
     cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (old_email,))
     conn.commit(); cur.close(); conn.close()
-    return jsonify({"success": True, "message": "Profile updated"})
+    return jsonify({"success": True, "message": "Profile updated successfully"})
