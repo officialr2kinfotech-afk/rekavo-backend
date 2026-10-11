@@ -1,18 +1,29 @@
 from flask import Flask
 from flask_cors import CORS
-import os
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins=["https://r2k-infotech.vercel.app", "https://rekavo.in", "http://localhost:3000", "https://rekavo-backend.vercel.app"])
 
-# Routes import - tere hi routes
+# Ye line sabse important hai - ye www.rekavo.in ko allow karegi
+CORS(app, resources={r"/*": {
+    "origins": ["https://rekavo.in", "https://www.rekavo.in", "https://r2k-infotech.vercel.app", "http://localhost:3000"],
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin"],
+    "supports_credentials": True
+}})
+
 from routes.auth import *
 from routes.cart import *
 from routes.orders import *
-from routes.address import *
 from routes.admin import *
+from routes.address import *
 
 @app.route('/')
-def home(): return "REKAVO Fixed - Modular - Admin Ready - Welcome Mail Live"
+def home():
+    return "REKAVO Backend - CORS Fixed"
 
-if __name__ == '__main__': app.run()
+@app.route('/health')
+def health():
+    return {"status": "ok"}
+
+if __name__ == '__main__':
+    app.run()
