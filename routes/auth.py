@@ -22,6 +22,7 @@ def create_table():
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS city VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS state VARCHAR(100);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS locality VARCHAR(255);")
+    cur.execute("CREATE TABLE IF NOT EXISTS sellers (id SERIAL PRIMARY KEY, store_name TEXT NOT NULL, owner_name TEXT, email TEXT UNIQUE NOT NULL, phone TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, gstin TEXT, bank_account TEXT, ifsc TEXT, created_at TIMESTAMPTZ DEFAULT NOW());")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS alt_phone VARCHAR(20);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS line1 VARCHAR(255);")
     cur.execute("ALTER TABLE user_addresses ADD COLUMN IF NOT EXISTS line2 VARCHAR(255);")
@@ -33,7 +34,35 @@ def create_table():
     cur.execute("ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     conn.commit(); cur.close(); conn.close()
     return "REKAVO FIXED - Neon DB Ready"
+    
+# ===== SELLER AUTH SYSTEM =====
+@app.route('/seller-register', methods=['POST'])
+def seller_register():
+    data = request.get_json()
+    try:
+        conn = get_db(); cur = conn.cursor()
+        hashed = generate_password_hash(data['password'])
+        cur.execute(
+            "INSERT INTO sellers (store_name, owner_name, email, phone, password_hash) VALUES (%s, %s, %s, %s, %s) RETURNING id;",
+            (data['store_name'], data['owner_name'], data['email'], data['phone'], hashed)
+        )
+        seller_id = cur.fetchone()['id']
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"message": "Seller registered!", "seller_id": seller_id}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
+@app.route('/seller-login', methods=['POST'])
+def seller_login():
+    data = request.get_json()
+    conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM sellers WHERE email=%s", (data['email'],))
+    seller = cur.fetchone()
+    cur.close(); conn.close()
+    if seller and check_password_hash(seller['password_hash'], data['password']):
+        return jsonify({"message": "Login success", "seller": seller}), 200
+    else:
+        return jsonify({"error": "Invalid email or password"}), 401
 @app.route('/send-otp', methods=['POST', 'OPTIONS'])
 def send_otp():
     if request.method == 'OPTIONS':
