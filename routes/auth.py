@@ -35,22 +35,23 @@ def create_table():
     conn.commit(); cur.close(); conn.close()
     return "REKAVO FIXED - Neon DB Ready"
     
+# ===== FINAL SELLER AUTH - SINGLE ROUTE, 8 FIELDS, SECURE =====
+import jwt
+from datetime import datetime, timedelta
+SECRET_KEY = "rekavo-seller-secret-2024-change-later-in-env"
+
 @app.route('/seller-register', methods=['POST'])
 def seller_register():
     data = request.get_json()
     try:
         conn = get_db()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # Check duplicate email/phone
         cur.execute("SELECT id FROM sellers WHERE email=%s OR phone=%s", (data['email'], data['phone']))
         if cur.fetchone():
             cur.close(); conn.close()
             return jsonify({"error": "Email or Phone already registered"}), 400
 
         hashed = generate_password_hash(data['password'])
-        
-        # Ab 8 value - poora detail
         cur.execute(
             """INSERT INTO sellers 
                (store_name, owner_name, email, phone, password_hash, gstin, bank_account, ifsc) 
@@ -61,9 +62,9 @@ def seller_register():
                 data.get('email'), 
                 data.get('phone'), 
                 hashed,
-                data.get('gstin', ''),          # GST number
-                data.get('bank_account', ''),   # Bank account
-                data.get('ifsc', '')            # IFSC code
+                data.get('gstin', ''), 
+                data.get('bank_account', ''), 
+                data.get('ifsc', '')
             )
         )
         seller_id = cur.fetchone()['id']
@@ -77,33 +78,46 @@ def seller_login():
     data = request.get_json()
     conn = get_db()
     cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM sellers WHERE email=%s", (data['email'],))
+    cur.execute("SELECT * FROM sellers WHERE email=%s OR phone=%s", (data['email'], data.get('email')))
     seller = cur.fetchone()
     cur.close(); conn.close()
     
     if seller and check_password_hash(seller['password_hash'], data['password']):
-        # password_hash hata do, warna leak hoga
-        seller_safe = {
-            "id": seller['id'],
-            "store_name": seller['store_name'],
-            "owner_name": seller['owner_name'],
-            "email": seller['email'],
-            "phone": seller['phone']
+        # Secure JWT Cookie - koi localStorage nahi
+        payload = {
+            "seller_id": seller['id'], 
+            "email": seller['email'], 
+            "exp": datetime.utcnow() + timedelta(days=7)
         }
-        return jsonify({"message": "Login success", "seller": seller_safe}), 200
+        token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+        resp = jsonify({"message": "Login success"})
+        resp.set_cookie('seller_token', token, httponly=True, secure=True, samesite='None', max_age=604800, path='/')
+        return resp
     else:
         return jsonify({"error": "Invalid email or password"}), 401
-@app.route('/seller-login', methods=['POST'])
-def seller_login():
-    data = request.get_json()
-    conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute("SELECT * FROM sellers WHERE email=%s", (data['email'],))
-    seller = cur.fetchone()
-    cur.close(); conn.close()
-    if seller and check_password_hash(seller['password_hash'], data['password']):
-        return jsonify({"message": "Login success", "seller": seller}), 200
-    else:
-        return jsonify({"error": "Invalid email or password"}), 401
+
+@app.route('/seller-verify', methods=['GET'])
+def seller_verify():
+    token = request.cookies.get('seller_token')
+    if not token:
+        return jsonify({"logged_in": False}), 401
+    try:
+        data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        conn = get_db(); cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, store_name, owner_name, email, phone, gstin FROM sellers WHERE id=%s", (data['seller_id'],))
+        seller = cur.fetchone()
+        cur.close(); conn.close()
+        if seller:
+            return jsonify({"logged_in": True, "seller": seller}), 200
+        return jsonify({"logged_in": False}), 401
+    except:
+        return jsonify({"logged_in": False}), 401
+
+@app.route('/seller-logout', methods=['POST'])
+def seller_logout():
+    resp = jsonify({"message": "Logged out"})
+    resp.delete_cookie('seller_token', path='/')
+    return resp
 @app.route('/send-otp', methods=['POST', 'OPTIONS'])
 def send_otp():
     if request.method == 'OPTIONS':
