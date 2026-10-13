@@ -323,22 +323,44 @@ def profile_verify_and_update():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True, "message": "Profile updated successfully"})
 
+import jwt
+import json
+from functools import wraps
+from datetime import datetime
+SECRET_KEY = "rekavo-seller-secret-2024-change-later-in-env"
+
+def seller_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.cookies.get('seller_token')
+        if not token:
+            return jsonify({"error": "Login required"}), 401
+        try:
+            data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+            request.seller_id = data['seller_id']
+        except:
+            return jsonify({"error": "Invalid session"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
 @app.route('/products/add', methods=['POST'])
+@seller_required
 def add_product():
     try:
-        import json
-        from datetime import datetime
-        from database import get_db_connection
+        from database import get_db
         data = request.json
-        conn = get_db_connection()
+        conn = get_db()
         cur = conn.cursor()
+        # LOCK: dealer_id ab frontend se nahi, secure cookie se ayega
+        real_dealer_id = str(request.seller_id)
         cur.execute("""
             INSERT INTO products
             (dealer_id, title, brand, sku, category, sub_category, product_type, description, bullets, main_image, gallery, mrp, selling_price, gst, total_stock, variant_attributes, variants, specs, weight, status, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,,%s,%s,%s)
             RETURNING id
         """, (
-            data.get('dealer_id'), data.get('title'), data.get('brand'), data.get('sku'),
+            real_dealer_id,
+            data.get('title'), data.get('brand'), data.get('sku'),
             data.get('category'), data.get('sub_category'),
             data.get('product_type'), data.get('description'),
             json.dumps(data.get('bullets',[])),
@@ -350,7 +372,7 @@ def add_product():
             json.dumps(data.get('variants',[])),
             json.dumps(data.get('specs',[])),
             data.get('weight',0),
-            data.get('status','active'),
+            data.get('status','pending'),
             datetime.now()
         ))
         pid = cur.fetchone()[0]
@@ -358,18 +380,19 @@ def add_product():
         cur.close(); conn.close()
         return jsonify({"message":"Product saved", "id": pid})
     except Exception as e:
+        print("ADD ERROR:", e)
         return jsonify({"error": str(e)}), 500
 
 @app.route('/products/get', methods=['GET'])
 def get_products():
     try:
-        from database import get_db_connection
+        from database import get_db
+        from psycopg2.extras import RealDictCursor
         status = request.args.get('status','active')
-        conn = get_db_connection()
-        cur = conn.cursor()
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM products WHERE status=%s ORDER BY id DESC", (status,))
-        cols = [desc[0] for desc in cur.description]
-        products = [dict(zip(cols, row)) for row in cur.fetchall()]
+        products = cur.fetchall()
         cur.close(); conn.close()
         return jsonify(products)
     except Exception as e:
