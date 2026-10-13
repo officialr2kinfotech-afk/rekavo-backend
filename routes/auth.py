@@ -356,7 +356,7 @@ def add_product():
         cur.execute("""
             INSERT INTO products
             (dealer_id, title, brand, sku, category, sub_category, product_type, description, bullets, main_image, gallery, mrp, selling_price, gst, total_stock, variant_attributes, variants, specs, weight, status, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING id
         """, (
             real_dealer_id,
