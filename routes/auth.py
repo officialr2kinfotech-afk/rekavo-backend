@@ -35,16 +35,36 @@ def create_table():
     conn.commit(); cur.close(); conn.close()
     return "REKAVO FIXED - Neon DB Ready"
     
-# ===== SELLER AUTH SYSTEM =====
 @app.route('/seller-register', methods=['POST'])
 def seller_register():
     data = request.get_json()
     try:
-        conn = get_db(); cur = conn.cursor()
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # Check duplicate email/phone
+        cur.execute("SELECT id FROM sellers WHERE email=%s OR phone=%s", (data['email'], data['phone']))
+        if cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"error": "Email or Phone already registered"}), 400
+
         hashed = generate_password_hash(data['password'])
+        
+        # Ab 8 value - poora detail
         cur.execute(
-            "INSERT INTO sellers (store_name, owner_name, email, phone, password_hash) VALUES (%s, %s, %s, %s, %s) RETURNING id;",
-            (data['store_name'], data['owner_name'], data['email'], data['phone'], hashed)
+            """INSERT INTO sellers 
+               (store_name, owner_name, email, phone, password_hash, gstin, bank_account, ifsc) 
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;""",
+            (
+                data.get('store_name'), 
+                data.get('owner_name'), 
+                data.get('email'), 
+                data.get('phone'), 
+                hashed,
+                data.get('gstin', ''),          # GST number
+                data.get('bank_account', ''),   # Bank account
+                data.get('ifsc', '')            # IFSC code
+            )
         )
         seller_id = cur.fetchone()['id']
         conn.commit(); cur.close(); conn.close()
@@ -52,6 +72,27 @@ def seller_register():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+@app.route('/seller-login', methods=['POST'])
+def seller_login():
+    data = request.get_json()
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute("SELECT * FROM sellers WHERE email=%s", (data['email'],))
+    seller = cur.fetchone()
+    cur.close(); conn.close()
+    
+    if seller and check_password_hash(seller['password_hash'], data['password']):
+        # password_hash hata do, warna leak hoga
+        seller_safe = {
+            "id": seller['id'],
+            "store_name": seller['store_name'],
+            "owner_name": seller['owner_name'],
+            "email": seller['email'],
+            "phone": seller['phone']
+        }
+        return jsonify({"message": "Login success", "seller": seller_safe}), 200
+    else:
+        return jsonify({"error": "Invalid email or password"}), 401
 @app.route('/seller-login', methods=['POST'])
 def seller_login():
     data = request.get_json()
