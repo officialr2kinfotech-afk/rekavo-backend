@@ -3,6 +3,11 @@ from app import app
 import random, os, psycopg2
 from psycopg2.extras import RealDictCursor
 import resend
+
+# ==== SPAM FIX + KEY FIX - SIRF YE 1 LINE ADDED HAI ====
+resend.api_key = os.getenv("RESEND_API_KEY")
+# =====================================================
+
 from datetime import datetime, timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
 from database import get_db
@@ -34,7 +39,7 @@ def create_table():
     cur.execute("ALTER TABLE user_orders ADD COLUMN IF NOT EXISTS user_id INTEGER;")
     conn.commit(); cur.close(); conn.close()
     return "REKAVO FIXED - Neon DB Ready"
-    
+
 # ===== FINAL SELLER AUTH - SINGLE ROUTE, 8 FIELDS, SECURE =====
 import jwt
 from datetime import datetime, timedelta
@@ -53,17 +58,17 @@ def seller_register():
 
         hashed = generate_password_hash(data['password'])
         cur.execute(
-            """INSERT INTO sellers 
-               (store_name, owner_name, email, phone, password_hash, gstin, bank_account, ifsc) 
+            """INSERT INTO sellers
+               (store_name, owner_name, email, phone, password_hash, gstin, bank_account, ifsc)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;""",
             (
-                data.get('store_name'), 
-                data.get('owner_name'), 
-                data.get('email'), 
-                data.get('phone'), 
+                data.get('store_name'),
+                data.get('owner_name'),
+                data.get('email'),
+                data.get('phone'),
                 hashed,
-                data.get('gstin', ''), 
-                data.get('bank_account', ''), 
+                data.get('gstin', ''),
+                data.get('bank_account', ''),
                 data.get('ifsc', '')
             )
         )
@@ -81,12 +86,12 @@ def seller_login():
     cur.execute("SELECT * FROM sellers WHERE email=%s OR phone=%s", (data['email'], data.get('email')))
     seller = cur.fetchone()
     cur.close(); conn.close()
-    
+
     if seller and check_password_hash(seller['password_hash'], data['password']):
         # Secure JWT Cookie - koi localStorage nahi
         payload = {
-            "seller_id": seller['id'], 
-            "email": seller['email'], 
+            "seller_id": seller['id'],
+            "email": seller['email'],
             "exp": datetime.utcnow() + timedelta(days=7)
         }
         token = jwt.encode(payload, SECRET_KEY, algorithm="HS256")
@@ -118,6 +123,25 @@ def seller_logout():
     resp = jsonify({"message": "Logged out"})
     resp.delete_cookie('seller_token', path='/')
     return resp
+
+def get_otp_html(otp, purpose="REKAVO Verification"):
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #eee; border-radius: 12px; overflow: hidden;">
+        <div style="background: #111; padding: 20px; text-align: center;">
+            <h1 style="color: #fff; margin: 0; letter-spacing: 2px;">REKAVO</h1>
+        </div>
+        <div style="padding: 30px;">
+            <h2 style="color: #111; margin-top: 0;">{purpose}</h2>
+            <p style="color: #555; font-size: 15px;">Your One-Time Password is:</p>
+            <div style="background: #f7f7f7; border: 2px dashed #111; border-radius: 8px; padding: 20px; text-align: center; margin: 20px 0;">
+                <span style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #111;">{otp}</span>
+            </div>
+            <p style="color: #555; font-size: 14px;">This OTP is valid for <b>10 minutes</b>. Do not share it with anyone.</p>
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">If you didn't request this, please ignore this email.<br>Team REKAVO - www.rekavo.in</p>
+        </div>
+    </div>
+    """
+
 @app.route('/send-otp', methods=['POST', 'OPTIONS'])
 def send_otp():
     if request.method == 'OPTIONS':
@@ -132,7 +156,13 @@ def send_otp():
         cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s, %s, %s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (email, otp, expiry, otp, expiry))
         conn.commit(); cur.close(); conn.close()
         try:
-            resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO OTP","html": f"<h1>{otp}</h1><p>Valid for 10 min.</p>"})
+            resend.Emails.send({
+                "from": "REKAVO <otp@rekavo.in>",
+                "to": [email],
+                "subject": f"{otp} is your REKAVO OTP - Valid for 10 min",
+                "html": get_otp_html(otp, "Email Verification"),
+                "tags": [{"name": "category", "value": "otp"}]
+            })
         except Exception as e: print(f"Resend error: {e}")
         return jsonify({"success": True, "message": "OTP has been sent to your email"})
     except Exception as e:
@@ -274,7 +304,13 @@ def profile_request_change():
     cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s,%s,%s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (old_email, otp, expiry, otp, expiry))
     conn.commit(); cur.close(); conn.close()
     try:
-        resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": old_email,"subject": f"{otp} - Verify profile change","html": f"<h1>{otp}</h1><p>New Email: {new_email}<br>New Phone: {new_phone}<br>OTP is valid for 10 minutes.</p>"})
+        resend.Emails.send({
+            "from": "REKAVO <otp@rekavo.in>",
+            "to": [old_email],
+            "subject": f"{otp} - Verify your profile change at REKAVO",
+            "html": get_otp_html(otp, f"Profile Change - New: {new_email} / {new_phone}"),
+            "tags": [{"name": "category", "value": "profile_change"}]
+        })
     except Exception as e: print(e)
     return jsonify({"success": True, "message": "OTP has been sent to your current email for verification."})
 
@@ -323,10 +359,8 @@ def profile_verify_and_update():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True, "message": "Profile updated successfully"})
 
-import jwt
 import json
 from functools import wraps
-from datetime import datetime
 SECRET_KEY = "rekavo-seller-secret-2024-change-later-in-env"
 
 def seller_required(f):
@@ -356,7 +390,7 @@ def add_product():
         cur.execute("""
             INSERT INTO products
             (dealer_id, title, brand, sku, category, sub_category, product_type, description, bullets, main_image, gallery, mrp, selling_price, gst, total_stock, variant_attributes, variants, specs, weight, status, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s)
             RETURNING id
         """, (
             real_dealer_id,
