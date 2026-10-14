@@ -2,11 +2,15 @@ from flask import request, jsonify
 from app import app
 from database import get_db
 from psycopg2.extras import RealDictCursor
-from auth import token_required  # 1. Bas ye line add ki
+
+# Import safe rakha hai dono setup ke liye
+try:
+    from routes.auth import token_required
+except:
+    from auth import token_required
 
 @app.route('/address/get', methods=['GET'])
-@token_required  # 2. Bas ye line add ki - isse bina login koi address nahi dekh payega
-def address_get(current_user):
+def address_get():
     try:
         user_id = request.args.get('user_id')
         email = request.args.get('email','').lower().strip()
@@ -27,7 +31,7 @@ def address_get(current_user):
         print("ADDRESS GET ERROR:", e)
         return jsonify([])
 
-@app.route('/address/add', methods=['POST'])
+@app.route('/address/add', methods=['POST', 'OPTIONS'])
 def address_add():
     try:
         d=request.get_json() or {}
@@ -47,7 +51,7 @@ def address_add():
         import traceback; traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/address/update', methods=['POST'])
+@app.route('/address/update', methods=['POST', 'PUT', 'OPTIONS'])
 def address_update():
     try:
         d=request.get_json() or {}
@@ -67,10 +71,18 @@ def address_update():
         print("ADDRESS UPDATE ERROR:", e)
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/address/delete', methods=['POST'])
+@app.route('/address/delete', methods=['POST', 'DELETE', 'OPTIONS'])
 def address_delete():
     try:
-        d=request.get_json(); conn=get_db(); cur=conn.cursor(); cur.execute("DELETE FROM user_addresses WHERE id=%s", (d.get('id') or d.get('address_id'),)); conn.commit(); cur.close(); conn.close(); return jsonify({"success": True})
+        d=request.get_json() or {}
+        addr_id = d.get('id') or d.get('address_id')
+        if not addr_id:
+            return jsonify({"success": False, "error": "id missing"}), 400
+        conn=get_db(); cur=conn.cursor()
+        cur.execute("DELETE FROM user_addresses WHERE id=%s", (addr_id,))
+        conn.commit()
+        cur.close(); conn.close()
+        return jsonify({"success": True})
     except Exception as e:
         print("DELETE ERR:", e)
-        return jsonify({"success": False}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
