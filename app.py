@@ -1,6 +1,6 @@
 from flask import Flask
 from flask_cors import CORS
-
+from middleware.auth import init_central_security
 app = Flask(__name__)
 
 # Ye line sabse important hai - ye www.rekavo.in ko allow karegi
@@ -10,7 +10,7 @@ CORS(app, resources={r"/*": {
     "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin"],
     "supports_credentials": True
 }})
-
+init_central_security(app)
 from routes.auth import *
 from routes.cart import *
 from routes.orders import *
