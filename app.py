@@ -11,7 +11,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True)
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": "*"}})
 
 resend.api_key = os.environ.get('RESEND_API_KEY')
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -52,18 +52,13 @@ def send_welcome_email(to_email, user_name="there"):
         if not gmail_user or not gmail_pass:
             print("Gmail creds missing")
             return False
-
         msg = MIMEMultipart("alternative")
         msg["Subject"] = f"Welcome to REKAVO Family, {user_name} 🖤"
         msg["From"] = f"REKAVO <{gmail_user}>"
         msg["To"] = to_email
-
         first_name = user_name.split()[0] if user_name else "there"
-
         html = f"""
-        <!DOCTYPE html>
-        <html>
-        <body style="margin:0;padding:0;background:#f4f4f4;font-family:Helvetica, Arial, sans-serif;">
+        <!DOCTYPE html><html><body style="margin:0;padding:0;background:#f4f4f4;font-family:Helvetica, Arial, sans-serif;">
         <div style="max-width:600px;margin:30px auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e5e5e5;">
             <div style="background:#000000;padding:32px 30px;text-align:center;">
                 <h1 style="color:#ffffff;margin:0;font-size:32px;letter-spacing:6px;font-weight:900;">REKAVO</h1>
@@ -72,20 +67,16 @@ def send_welcome_email(to_email, user_name="there"):
             <div style="padding:40px 32px;">
                 <h2 style="margin:0 0 10px 0;font-size:26px;color:#000;">Welcome, {first_name}! 🖤</h2>
                 <p style="color:#333;font-size:15px;line-height:24px;margin:0;">Your account has been <b>successfully created</b>. You are now officially part of the REKAVO Family.</p>
-
                 <div style="background:#f9f9f9;border:2px dashed #000;border-radius:14px;padding:24px;text-align:center;margin:32px 0;">
                     <p style="margin:0;font-size:11px;letter-spacing:2px;color:#666;font-weight:bold;">YOUR FIRST ORDER GIFT</p>
                     <h1 style="margin:12px 0;font-size:36px;letter-spacing:4px;color:#000;">WELCOME10</h1>
                     <p style="margin:0 0 8px 0;font-size:14px;color:#000;font-weight:bold;">Get 10% OFF on your first drop</p>
                     <p style="margin:0;font-size:12px;color:#888;">Valid for next 48 hours • No minimum order</p>
                 </div>
-
                 <p style="color:#555;font-size:14px;line-height:22px;">At REKAVO, we don't just sell clothes. We craft identity. Premium fabrics, limited drops, built for those who stand out.</p>
-
                 <div style="text-align:center;margin:30px 0;">
                     <a href="https://rekavo.in" style="display:inline-block;background:#000;color:#fff;padding:16px 40px;text-decoration:none;border-radius:100px;font-weight:900;letter-spacing:1px;font-size:14px;">START SHOPPING →</a>
                 </div>
-
                 <div style="border-top:1px solid #eee;padding-top:20px;margin-top:20px;">
                     <p style="font-size:12px;color:#999;margin:0;">Need help? Just reply to this email - <b>rekavostore@gmail.com</b></p>
                     <p style="font-size:12px;color:#999;margin:6px 0 0 0;">Follow the drop: Instagram @rekavo.in</p>
@@ -94,9 +85,7 @@ def send_welcome_email(to_email, user_name="there"):
             <div style="background:#000;padding:20px;text-align:center;">
                 <p style="color:#666;font-size:11px;margin:0;letter-spacing:1px;">© 2026 REKAVO • R2K INFOTECH • All Rights Reserved</p>
             </div>
-        </div>
-        </body>
-        </html>
+        </div></body></html>
         """
         msg.attach(MIMEText(html, "html"))
         server = smtplib.SMTP("smtp.gmail.com", 587)
@@ -193,7 +182,6 @@ def verify_otp():
                 cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (email,))
                 conn.commit()
                 cur.close(); conn.close()
-                # SEND PREMIUM WELCOME EMAIL VIA GMAIL - NON BLOCKING
                 try:
                     send_welcome_email(email, name or "there")
                 except Exception as e:
@@ -209,8 +197,54 @@ def verify_otp():
         import traceback; traceback.print_exc()
         return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
 
-@app.route('/login', methods=['POST'])
+# ===== FIX 1: FORGOT PASSWORD - Yahi missing tha =====
+@app.route('/reset-password', methods=['POST', 'OPTIONS'])
+def reset_password():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
+    try:
+        data = request.get_json() or {}
+        email = (data.get('email') or '').lower().strip()
+        otp = str(data.get('otp') or '').strip()
+        new_pass = (data.get('new_password') or data.get('password') or '').strip()
+        if not email or not otp or not new_pass:
+            return jsonify({"success": False, "error": "Email, OTP and new password required"}), 400
+        if len(new_pass) < 6:
+            return jsonify({"success": False, "error": "Password must be at least 6 characters"}), 400
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (email,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "OTP not sent, resend karo"}), 400
+        db_otp, expiry = row
+        try:
+            if expiry and expiry.tzinfo is not None:
+                expiry = expiry.replace(tzinfo=None)
+        except: pass
+        if expiry and datetime.now() > expiry:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "OTP expired"}), 400
+        if str(db_otp).strip()!= otp:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "Wrong OTP"}), 400
+        hashed = generate_password_hash(new_pass)
+        cur.execute("UPDATE users SET password=%s WHERE LOWER(email)=%s", (hashed, email))
+        if cur.rowcount == 0:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "User not found"}), 404
+        cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (email,))
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"success": True, "message": "Password updated successfully"})
+    except Exception as e:
+        print(f"RESET-PASSWORD ERROR: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
+
+@app.route('/login', methods=['POST', 'OPTIONS'])
 def login():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     try:
         data = request.get_json() or {}
         login_text = data.get('email','').strip().lower()
@@ -414,7 +448,7 @@ def address_add():
         conn=get_db(); cur=conn.cursor()
         cur.execute("""
             INSERT INTO user_addresses (user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s)
         """, (uid_int, email, d.get('full_name'), d.get('phone'), d.get('alt_phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality'), d.get('line1'), d.get('line2'), d.get('landmark'), d.get('type','Home')))
         conn.commit(); cur.close(); conn.close()
         return jsonify({"success": True})
@@ -464,8 +498,11 @@ def update_name():
     conn.commit(); cur.close(); conn.close()
     return jsonify({"success": True})
 
-@app.route('/profile/request-change', methods=['POST'])
+# ===== FIX 2: EDIT PROFILE - OTP ab Gmail fallback se 100% ayega =====
+@app.route('/profile/request-change', methods=['POST', 'OPTIONS'])
 def profile_request_change():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     d = request.get_json() or {}
     old_email = (d.get('old_email') or '').lower().strip()
     new_email = (d.get('new_email') or '').lower().strip() or old_email
@@ -488,13 +525,45 @@ def profile_request_change():
     expiry = datetime.now() + timedelta(minutes=10)
     cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s,%s,%s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (old_email, otp, expiry, otp, expiry))
     conn.commit(); cur.close(); conn.close()
+
+    sent = False
+    # Try Resend first
     try:
         resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": old_email,"subject": f"{otp} - Verify profile change","html": f"<h1>{otp}</h1><p>New Email: {new_email}<br>New Phone: {new_phone}<br>OTP 10 min valid.</p>"})
-    except Exception as e: print(e)
-    return jsonify({"success": True})
+        sent = True
+        print(f"Profile OTP via Resend to {old_email}: {otp}")
+    except Exception as e:
+        print(f"Resend profile failed: {e}")
+        # Fallback Gmail
+        try:
+            gmail_user = os.getenv("GMAIL_USER")
+            gmail_pass = os.getenv("GMAIL_APP_PASSWORD")
+            if gmail_user and gmail_pass:
+                msg = MIMEMultipart("alternative")
+                msg["Subject"] = f"{otp} - REKAVO Verify Profile Change"
+                msg["From"] = f"REKAVO <{gmail_user}>"
+                msg["To"] = old_email
+                html_body = f"<div style='font-family:Arial'><h1>{otp}</h1><p>New Email: {new_email}<br>New Phone: {new_phone}</p><p>Valid 10 min</p></div>"
+                msg.attach(MIMEText(html_body, "html"))
+                server = smtplib.SMTP("smtp.gmail.com", 587)
+                server.starttls()
+                server.login(gmail_user, gmail_pass)
+                server.sendmail(gmail_user, old_email, msg.as_string())
+                server.quit()
+                sent = True
+                print(f"Profile OTP via Gmail to {old_email}: {otp}")
+        except Exception as e2:
+            print(f"Gmail fallback also failed: {e2}")
 
-@app.route('/profile/verify-and-update', methods=['POST'])
+    if not sent:
+        return jsonify({"success": False, "error": "OTP send failed, check RESEND_API_KEY / GMAIL creds"}), 500
+
+    return jsonify({"success": True, "message": f"OTP sent to {old_email}"})
+
+@app.route('/profile/verify-and-update', methods=['POST', 'OPTIONS'])
 def profile_verify_and_update():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
     d = request.get_json() or {}
     uid = d.get('user_id')
     old_email = (d.get('old_email') or '').lower().strip()
@@ -569,12 +638,12 @@ def admin_panel():
         <title>REKAVO Admin</title>
         <style>
         body{{font-family:Inter,system-ui,sans-serif;background:#070709;color:#fff;margin:0;padding:16px}}
-  .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
-  .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
-  .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
+ .top{{background:linear-gradient(135deg,#7c00ff,#ff00a0);padding:20px;border-radius:16px;display:flex;justify-content:space-between;align-items:center}}
+ .card{{background:#121214;border:1px solid #222;border-radius:16px;margin-top:16px;overflow:hidden}}
+ .search{{background:#1c1c1f;border:1px solid #333;color:#fff;padding:10px 14px;border-radius:10px;width:260px}}
         table{{width:100%;border-collapse:collapse}} th,td{{padding:14px 12px;border-bottom:1px solid #1e1e21;text-align:left;font-size:13px}} th{{color:#888;font-size:11px;text-transform:uppercase;letter-spacing:1px}}
         tr:hover{{background:#151518}}.mono{{font-family:monospace}}.blur{{filter:blur(0px);color:#888}}.blur:hover{{filter:none;color:#fff}}
-  .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
+ .badge{{background:#00ff88/20;color:#00ff88;padding:4px 10px;border-radius:20px;font-size:12px}}
         </style></head>
         <body>
         <div class='top'><div><h2 style='margin:0'>REKAVO ADMIN</h2><small>Secured • {len(rows)} Users</small></div><div><span class='badge'>● LIVE Neon</span></div></div>
