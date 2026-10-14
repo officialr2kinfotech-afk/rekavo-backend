@@ -2,11 +2,9 @@ from flask import request, jsonify
 from app import app
 from database import get_db
 from psycopg2.extras import RealDictCursor
-from auth import token_required  # 1. Bas ye line add ki
 
 @app.route('/address/get', methods=['GET'])
-@token_required  # 2. Bas ye line add ki - isse bina login koi address nahi dekh payega
-def address_get(current_user):
+def address_get():
     try:
         user_id = request.args.get('user_id')
         email = request.args.get('email','').lower().strip()
