@@ -2,11 +2,9 @@ from flask import request, jsonify
 from app import app
 from database import get_db
 from psycopg2.extras import RealDictCursor
-from auth import token_required  # 1. Bas ye line add ki
 
 @app.route('/address/get', methods=['GET'])
-@token_required  # 2. Bas ye line add ki - isse bina login koi address nahi dekh payega
-def address_get(current_user):
+def address_get():
     try:
         user_id = request.args.get('user_id')
         email = request.args.get('email','').lower().strip()
@@ -27,51 +25,25 @@ def address_get(current_user):
         print("ADDRESS GET ERROR:", e)
         return jsonify([])
 
-  @app.route('/address/add', methods=['POST'])
-    def address_add():
-        try:
-            d = request.get_json() or {}
-            email = (d.get('email') or '').lower().strip()
-            try:
-                uid_int = int(d.get('user_id')) if d.get('user_id') else None
-            except:
-                uid_int = None
-
-            conn = get_db()
-            cur = conn.cursor()
-
-            cols = ["user_id","email","full_name","phone","alt_phone","pincode","full_address","city","state","locality","line1","line2","landmark","type"]
-            vals = [
-                uid_int,
-                email,
-                d.get('full_name'),
-                d.get('phone'),
-                d.get('alt_phone'),
-                d.get('pincode'),
-                d.get('full_address') or d.get('line1') or 'Test Address',
-                d.get('city'),
-                d.get('state'),
-                d.get('locality'),
-                d.get('line1'),
-                d.get('line2'),
-                d.get('landmark'),
-                d.get('type','Home')
-            ]
-
-            # auto placeholders, kabhi mismatch nahi hoga
-            placeholders = ", ".join(["%s"] * len(cols))
-            sql = f"INSERT INTO user_addresses ({', '.join(cols)}) VALUES ({placeholders})"
-            
-            cur.execute(sql, tuple(vals))
-            conn.commit()
-            cur.close()
-            conn.close()
-            return jsonify({"success": True})
-
-        except Exception as e:
-            print("ADDRESS ADD ERROR:", e)
-            import traceback; traceback.print_exc()
-            return jsonify({"success": False, "error": str(e)}), 500
+@app.route('/address/add', methods=['POST'])
+def address_add():
+    try:
+        d=request.get_json() or {}
+        user_id = d.get('user_id')
+        email=(d.get('email') or '').lower().strip()
+        try: uid_int=int(user_id) if user_id else None
+        except: uid_int=None
+        conn=get_db(); cur=conn.cursor()
+        cur.execute("""
+            INSERT INTO user_addresses (user_id, email, full_name, phone, alt_phone, pincode, full_address, city, state, locality, line1, line2, landmark, type)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (uid_int, email, d.get('full_name'), d.get('phone'), d.get('alt_phone'), d.get('pincode'), d.get('full_address'), d.get('city'), d.get('state'), d.get('locality'), d.get('line1'), d.get('line2'), d.get('landmark'), d.get('type','Home')))
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"success": True})
+    except Exception as e:
+        print("ADDRESS ADD ERROR:", e)
+        import traceback; traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/address/update', methods=['POST'])
 def address_update():
