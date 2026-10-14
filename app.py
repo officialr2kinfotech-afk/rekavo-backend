@@ -3,16 +3,23 @@ from flask_cors import CORS
 import os
 import resend
 
-# ==== YE 2 LINE SELLER OTP  - BAS ====
 resend.api_key = os.getenv("RESEND_API_KEY")
 print("RESEND KEY LOADED:", bool(os.getenv("RESEND_API_KEY")))
-# ==========================================
 
 app = Flask(__name__)
 
-# Ye line sabse important hai - ye www.rekavo.in ko allow karegi...!
 CORS(app, resources={r"/*": {
-    "origins": ["https://rekavo.in", "https://www.rekavo.in", "https://rekavo-backend.vercel.app", "https://r2k-infotech.vercel.app", "http://localhost:3000", "http://localhost:5500"],
+    "origins": [
+        "https://rekavo.in",
+        "https://www.rekavo.in",
+        "https://seller.rekavo.in",
+        "https://www.seller.rekavo.in",
+        "https://rekavo-backend.vercel.app",
+        "https://r2k-infotech.vercel.app",
+        "http://localhost:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500"
+    ],
     "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     "allow_headers": ["Content-Type", "Authorization", "Accept", "Origin"],
     "supports_credentials": True
@@ -26,7 +33,7 @@ from routes.address import *
 
 @app.route('/')
 def home():
-    return "REKAVO Backend - CORS Fixed"
+    return "REKAVO Backend - CORS Fixed & Seller Added"
 
 @app.route('/health')
 def health():
