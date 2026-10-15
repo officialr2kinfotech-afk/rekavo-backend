@@ -195,23 +195,29 @@ def seller_send_otp():
     try:
         data = request.get_json() or {}
         email = data.get('email','').lower().strip()
-        if not email: return jsonify({"success": False, "error": "Email is required"}), 400
+        if not email: 
+            return jsonify({"success": False, "error": "Email is required"}), 400
         otp = str(random.randint(100000, 999999))
         expiry = datetime.now() + timedelta(minutes=10)
         conn = get_db(); cur = conn.cursor()
-        # same table use kar rahe hain, customer se takrayega nahi kyunki email same hai to OTP overwrite hoga jo sahi hai
         cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s, %s, %s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (email, otp, expiry, otp, expiry))
         conn.commit(); cur.close(); conn.close()
         try:
-            resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO SELLER OTP","html": f"<h1>{otp}</h1><p>Valid for 10 min for Seller Registration.</p>"})
-            email_sent = True
+            resend.Emails.send({
+                "from": "REKAVO <otp@rekavo.in>",
+                "to": email,
+                "subject": f"{otp} is your REKAVO SELLER OTP",
+                "html": f"<div style='font-family:sans-serif;padding:20px'><h2 style='color:#ff5a00'>Welcome to Rekavo!</h2><h1 style='letter-spacing:5px'>{otp}</h1><p>Valid for 10 min for Seller Registration.</p><p>Do not share this code.</p></div>"
+            })
         except Exception as e: 
             print(f"Resend error: {e}")
-            email_sent = False
+            # Email fail bhi ho to bhi error mat de, bas log kar
+            pass
         
-        # TESTING KE LIYE debug_otp bhej raha hu - Live pe hata dena
-        return jsonify({"success": True, "message": "OTP sent", "debug_otp": otp, "email_sent": email_sent})
+        # PRODUCTION MODE - No debug_otp
+        return jsonify({"success": True, "message": "OTP sent to email"})
     except Exception as e:
+        print(f"SEND OTP ERROR: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/seller/verify-otp', methods=['POST', 'OPTIONS'])
@@ -234,14 +240,14 @@ def seller_verify_otp():
         
         db_otp, expiry = row
         try:
-            if expiry and expiry.tzinfo is not None: expiry = expiry.replace(tzinfo=None)
+            if expiry and expiry.tzinfo is not None: 
+                expiry = expiry.replace(tzinfo=None)
         except: pass
         if expiry and datetime.now() > expiry:
             cur.close(); conn.close()
             return jsonify({"success": False, "error": "OTP expired. Resend."}), 400
 
         if str(db_otp).strip() == user_otp:
-            # OTP sahi hai - yahan delete nahi karenge, seller-register tak rakhenge
             cur.close(); conn.close()
             return jsonify({"success": True, "message": "OTP verified successfully"})
         else:
@@ -254,7 +260,8 @@ def seller_verify_otp():
 # ===== SELLER FORGOT PASSWORD =====
 @app.route('/seller/forgot/send-otp', methods=['POST', 'OPTIONS'])
 def seller_forgot_send():
-    if request.method == 'OPTIONS': return jsonify({"success": True}), 200
+    if request.method == 'OPTIONS': 
+        return jsonify({"success": True}), 200
     try:
         data = request.get_json() or {}
         email = data.get('email','').lower().strip()
@@ -271,15 +278,24 @@ def seller_forgot_send():
         cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s, %s, %s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (email, otp, expiry, otp, expiry))
         conn.commit(); cur.close(); conn.close()
         try:
-            resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO Password Reset OTP","html": f"<h1>{otp}</h1><p>Valid for 10 min.</p>"})
-        except Exception as e: print(f"Resend error: {e}")
-        return jsonify({"success": True, "debug_otp": otp})
+            resend.Emails.send({
+                "from": "REKAVO <otp@rekavo.in>",
+                "to": email,
+                "subject": f"{otp} is your REKAVO Password Reset OTP",
+                "html": f"<h1>{otp}</h1><p>Valid for 10 min for password reset.</p>"
+            })
+        except Exception as e: 
+            print(f"Resend error: {e}")
+        
+        # PRODUCTION MODE - No debug_otp here also
+        return jsonify({"success": True, "message": "OTP sent to email"})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/seller/forgot/verify-otp', methods=['POST', 'OPTIONS'])
 def seller_forgot_verify():
-    if request.method == 'OPTIONS': return jsonify({"success": True}), 200
+    if request.method == 'OPTIONS': 
+        return jsonify({"success": True}), 200
     try:
         data = request.get_json() or {}
         email = data.get('email','').lower().strip()
@@ -297,7 +313,6 @@ def seller_forgot_verify():
             cur.close(); conn.close()
             return jsonify({"success": False, "error": "Invalid OTP"}), 400
         
-        # Password Update
         hashed = generate_password_hash(new_pass)
         cur.execute("UPDATE sellers SET password=%s WHERE LOWER(email)=%s", (hashed, email))
         cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (email,))
