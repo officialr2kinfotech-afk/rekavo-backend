@@ -187,6 +187,125 @@ def verify_otp():
         print(f"VERIFY-OTP ERROR: {e}")
         return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
 
+# ===== SELLER OTP - REGISTER =====
+@app.route('/seller/send-otp', methods=['POST', 'OPTIONS'])
+def seller_send_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
+    try:
+        data = request.get_json() or {}
+        email = data.get('email','').lower().strip()
+        if not email: return jsonify({"success": False, "error": "Email is required"}), 400
+        otp = str(random.randint(100000, 999999))
+        expiry = datetime.now() + timedelta(minutes=10)
+        conn = get_db(); cur = conn.cursor()
+        # same table use kar rahe hain, customer se takrayega nahi kyunki email same hai to OTP overwrite hoga jo sahi hai
+        cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s, %s, %s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (email, otp, expiry, otp, expiry))
+        conn.commit(); cur.close(); conn.close()
+        try:
+            resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO SELLER OTP","html": f"<h1>{otp}</h1><p>Valid for 10 min for Seller Registration.</p>"})
+            email_sent = True
+        except Exception as e: 
+            print(f"Resend error: {e}")
+            email_sent = False
+        
+        # TESTING KE LIYE debug_otp bhej raha hu - Live pe hata dena
+        return jsonify({"success": True, "message": "OTP sent", "debug_otp": otp, "email_sent": email_sent})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/seller/verify-otp', methods=['POST', 'OPTIONS'])
+def seller_verify_otp():
+    if request.method == 'OPTIONS':
+        return jsonify({"success": True}), 200
+    try:
+        data = request.get_json() or {}
+        email = data.get('email','').lower().strip()
+        user_otp = str(data.get('otp') or '').strip()
+        if not email or not user_otp:
+            return jsonify({"success": False, "error": "Email and OTP required"}), 400
+        
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (email,))
+        row = cur.fetchone()
+        if not row:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "OTP not found. Please resend."}), 400
+        
+        db_otp, expiry = row
+        try:
+            if expiry and expiry.tzinfo is not None: expiry = expiry.replace(tzinfo=None)
+        except: pass
+        if expiry and datetime.now() > expiry:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "OTP expired. Resend."}), 400
+
+        if str(db_otp).strip() == user_otp:
+            # OTP sahi hai - yahan delete nahi karenge, seller-register tak rakhenge
+            cur.close(); conn.close()
+            return jsonify({"success": True, "message": "OTP verified successfully"})
+        else:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "Invalid OTP."}), 400
+    except Exception as e:
+        print(f"SELLER VERIFY ERROR: {e}")
+        return jsonify({"success": False, "error": f"Server error: {str(e)}"}), 500
+
+# ===== SELLER FORGOT PASSWORD =====
+@app.route('/seller/forgot/send-otp', methods=['POST', 'OPTIONS'])
+def seller_forgot_send():
+    if request.method == 'OPTIONS': return jsonify({"success": True}), 200
+    try:
+        data = request.get_json() or {}
+        email = data.get('email','').lower().strip()
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT id FROM sellers WHERE LOWER(email)=%s", (email,))
+        if not cur.fetchone():
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "Seller not found with this email"}), 404
+        cur.close(); conn.close()
+        
+        otp = str(random.randint(100000, 999999))
+        expiry = datetime.now() + timedelta(minutes=10)
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("INSERT INTO otps (email, otp_code, expires_at) VALUES (%s, %s, %s) ON CONFLICT (email) DO UPDATE SET otp_code=%s, expires_at=%s", (email, otp, expiry, otp, expiry))
+        conn.commit(); cur.close(); conn.close()
+        try:
+            resend.Emails.send({"from": "REKAVO <otp@rekavo.in>","to": email,"subject": f"{otp} is your REKAVO Password Reset OTP","html": f"<h1>{otp}</h1><p>Valid for 10 min.</p>"})
+        except Exception as e: print(f"Resend error: {e}")
+        return jsonify({"success": True, "debug_otp": otp})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/seller/forgot/verify-otp', methods=['POST', 'OPTIONS'])
+def seller_forgot_verify():
+    if request.method == 'OPTIONS': return jsonify({"success": True}), 200
+    try:
+        data = request.get_json() or {}
+        email = data.get('email','').lower().strip()
+        user_otp = str(data.get('otp') or '').strip()
+        new_pass = data.get('new_password') or data.get('password')
+        
+        conn = get_db(); cur = conn.cursor()
+        cur.execute("SELECT otp_code, expires_at FROM otps WHERE LOWER(email)=%s", (email,))
+        row = cur.fetchone()
+        if not row: 
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "OTP not found"}), 400
+        db_otp, expiry = row
+        if str(db_otp).strip() != user_otp:
+            cur.close(); conn.close()
+            return jsonify({"success": False, "error": "Invalid OTP"}), 400
+        
+        # Password Update
+        hashed = generate_password_hash(new_pass)
+        cur.execute("UPDATE sellers SET password=%s WHERE LOWER(email)=%s", (hashed, email))
+        cur.execute("DELETE FROM otps WHERE LOWER(email)=%s", (email,))
+        conn.commit(); cur.close(); conn.close()
+        return jsonify({"success": True, "message": "Password updated successfully"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/login', methods=['POST', 'OPTIONS'])
 def login():
     if request.method == 'OPTIONS':
